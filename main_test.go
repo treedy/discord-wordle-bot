@@ -30,6 +30,9 @@ func TestLoadConfigValidatesAndNormalizes(t *testing.T) {
 	if cfg.Location == nil || cfg.Location.String() != "America/New_York" {
 		t.Fatalf("Location = %v, want America/New_York", cfg.Location)
 	}
+	if cfg.StarterPrompt != defaultStarterPrompt {
+		t.Fatalf("StarterPrompt = %q, want %q", cfg.StarterPrompt, defaultStarterPrompt)
+	}
 
 	today := currentDay(time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC), cfg.Location)
 	if got := today.Format("Jan 2"); got != "Apr 18" {

@@ -19,14 +19,16 @@ type Config struct {
 	BotToken       string         `json:"bot_token"`
 	ChannelID      string         `json:"channel_id"`
 	TrackedUserIDs []string       `json:"tracked_user_ids"`
+	StarterPrompt  string         `json:"starter_prompt"`
 	Timezone       string         `json:"timezone"`
 	Location       *time.Location `json:"-"`
 }
 
 const (
-	exitSuccess      = 0
-	exitRuntimeError = 1
-	exitConfigError  = 2
+	defaultStarterPrompt = "Enter your Wordle score here"
+	exitSuccess          = 0
+	exitRuntimeError     = 1
+	exitConfigError      = 2
 )
 
 var (
@@ -76,6 +78,7 @@ func loadConfig(path string) (*Config, error) {
 func validateConfig(c *Config) error {
 	c.BotToken = normalizeBotToken(c.BotToken)
 	c.ChannelID = strings.TrimSpace(c.ChannelID)
+	c.StarterPrompt = strings.TrimSpace(c.StarterPrompt)
 	c.Timezone = strings.TrimSpace(c.Timezone)
 
 	if c.BotToken == "" {
@@ -103,6 +106,10 @@ func validateConfig(c *Config) error {
 		normalizedUserIDs = append(normalizedUserIDs, id)
 	}
 	c.TrackedUserIDs = normalizedUserIDs
+
+	if c.StarterPrompt == "" {
+		c.StarterPrompt = defaultStarterPrompt
+	}
 
 	if c.Timezone == "" {
 		return errors.New("timezone is required")
@@ -206,7 +213,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 
 	threadID, threadName := findTodayThread(threads, today)
 	if threadID == "" {
-		starterMessage, err := sendChannelMessageFn(dg, cfg.ChannelID, "Enter your Wordle score here")
+		starterMessage, err := sendChannelMessageFn(dg, cfg.ChannelID, cfg.StarterPrompt)
 		if err != nil {
 			errorLogger.Printf("failed to send thread starter message: %v", err)
 			return exitRuntimeError

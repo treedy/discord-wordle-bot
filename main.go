@@ -222,7 +222,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 			errorLogger.Printf("failed to create daily thread: %v", err)
 			return exitRuntimeError
 		}
-		infoLogger.Printf("created daily thread name=%q for current_date=%s; exiting without reminder", todayTitle, todayTitle)
+		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
 		return exitSuccess
 	}
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)

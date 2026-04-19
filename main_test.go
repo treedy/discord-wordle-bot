@@ -166,8 +166,8 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 		if channelID != "123456789012345678" {
 			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "123456789012345678")
 		}
-		if content != "Enter your Wordle score here" {
-			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, "Enter your Wordle score here")
+		if content != defaultStarterPrompt {
+			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, defaultStarterPrompt)
 		}
 		return &discordgo.Message{ID: "starter-message-id"}, nil
 	}
@@ -206,7 +206,7 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	if !strings.Contains(logOutput, "current_date=Apr 18 timezone=America/New_York") {
 		t.Fatalf("stdout = %q, want timezone-based thread date log", logOutput)
 	}
-	if !strings.Contains(logOutput, `created daily thread name="Apr 18" for current_date=Apr 18; exiting without reminder`) {
+	if !strings.Contains(logOutput, `created daily thread name="Apr 18"; exiting without reminder`) {
 		t.Fatalf("stdout = %q, want created-thread success log", logOutput)
 	}
 	if messagesInChannelCalled {

@@ -183,6 +183,77 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	}
 }
 
+func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789", "345678901234567890"],
+  "timezone": "America/New_York"
+}`)
+
+	originalNewDiscordSession := newDiscordSession
+	originalListActiveThreads := listActiveThreadsFn
+	originalSendChannelMessage := sendChannelMessageFn
+	originalCreateThreadFromMessage := createThreadFromMessageFn
+	originalMessagesInChannel := messagesInChannelFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		listActiveThreadsFn = originalListActiveThreads
+		sendChannelMessageFn = originalSendChannelMessage
+		createThreadFromMessageFn = originalCreateThreadFromMessage
+		messagesInChannelFn = originalMessagesInChannel
+	})
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		return &discordgo.Session{}, nil
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
+	}
+	createThreadFromMessageFn = func(s *discordgo.Session, channelID, messageID, name string) (*discordgo.Channel, error) {
+		t.Fatalf("createThreadFromMessageFn() should not be called when today's thread already exists")
+		return nil, nil
+	}
+	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
+		if channelID != "existing-thread-id" {
+			t.Fatalf("messagesInChannelFn() channelID = %q, want %q", channelID, "existing-thread-id")
+		}
+		return []*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
+			{Author: &discordgo.User{ID: "999999999999999999"}, Content: "hello"},
+		}, nil
+	}
+	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
+		if channelID != "existing-thread-id" {
+			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "existing-thread-id")
+		}
+		if content != "Hey <@345678901234567890>! You haven't completed Wordle today" {
+			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, "Hey <@345678901234567890>! You haven't completed Wordle today")
+		}
+		return &discordgo.Message{ID: "reminder-id"}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run(configPath, &stdout, &stderr, func() time.Time {
+		return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
+	})
+
+	if exitCode != exitSuccess {
+		t.Fatalf("run() exitCode = %d, want %d", exitCode, exitSuccess)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `found active thread name="Apr 18" id=existing-thread-id`) {
+		t.Fatalf("stdout = %q, want found-thread log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "posted reminder for 1 missing user(s)") {
+		t.Fatalf("stdout = %q, want reminder log", stdout.String())
+	}
+}
+
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
 

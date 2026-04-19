@@ -122,7 +122,7 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return &discordgo.Session{}, nil
 	}
-	listActiveThreadsFn = func(channelID, botToken string) ([]map[string]interface{}, error) {
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
 		return nil, nil
 	}
 

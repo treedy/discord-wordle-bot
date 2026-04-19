@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -123,45 +122,22 @@ func currentDay(now time.Time, location *time.Location) time.Time {
 	return now.In(location)
 }
 
-// call Discord REST to list active threads for a channel
-func listActiveThreads(channelID, botToken string) ([]map[string]interface{}, error) {
-	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/threads/active", channelID)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP request for active threads: %w", err)
-	}
-	req.Header.Set("Authorization", "Bot "+normalizeBotToken(botToken))
-	req.Header.Set("User-Agent", "discord-wordle-bot")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+func listActiveThreads(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+	threads, err := s.ThreadsActive(channelID)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("discord API returned %d: %s", resp.StatusCode, string(body))
+	if threads == nil {
+		return nil, nil
 	}
-	var out struct {
-		Threads []map[string]interface{} `json:"threads"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
-	}
-	return out.Threads, nil
+	return threads.Threads, nil
 }
 
-func findTodayThread(threads []map[string]interface{}, t time.Time) (string, string) {
+func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string) {
 	want := t.Format("Jan 2")
 	for _, th := range threads {
-		if nameI, ok := th["name"]; ok {
-			if name, ok2 := nameI.(string); ok2 && name == want {
-				if idI, ok3 := th["id"]; ok3 {
-					if id, ok4 := idI.(string); ok4 {
-						return id, name
-					}
-				}
-			}
+		if th != nil && th.Name == want {
+			return th.ID, th.Name
 		}
 	}
 	return "", ""
@@ -214,7 +190,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 		return exitRuntimeError
 	}
 
-	threads, err := listActiveThreadsFn(cfg.ChannelID, cfg.BotToken)
+	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
 	if err != nil {
 		errorLogger.Printf("failed to list active threads: %v", err)
 		return exitRuntimeError

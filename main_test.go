@@ -49,6 +49,16 @@ func TestLoadConfigRejectsInvalidConfig(t *testing.T) {
 			wantErr: "decode config",
 		},
 		{
+			name: "multiple json objects",
+			config: `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}{"extra":true}`,
+			wantErr: "config file must contain exactly one JSON object",
+		},
+		{
 			name: "missing channel id",
 			config: `{
   "bot_token": "secret-token",

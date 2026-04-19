@@ -56,8 +56,12 @@ func loadConfig(path string) (*Config, error) {
 	if err := decoder.Decode(&c); err != nil {
 		return nil, fmt.Errorf("decode config: %w", err)
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return nil, fmt.Errorf("decode config: config file must contain exactly one JSON object")
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("decode config: config file must contain exactly one JSON object")
+		}
+		return nil, fmt.Errorf("decode config: invalid trailing data: %w", err)
 	}
 
 	if err := validateConfig(&c); err != nil {

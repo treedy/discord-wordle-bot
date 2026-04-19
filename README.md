@@ -4,7 +4,7 @@ A small command-line tool that checks a configured channel for an active daily t
 
 Quick start
 
-1. Copy `config.sample.json` to `config.json` and fill in `bot_token`, `channel_id`, `tracked_user_ids`, and `timezone` (for example `America/New_York`).
+1. Copy `config.sample.json` to `config.json` and fill in `bot_token`, `channel_id`, `starter_prompt`, `tracked_user_ids`, and `timezone` (for example `America/New_York`).
 2. Build the program:
 
 ```bash

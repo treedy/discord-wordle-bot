@@ -19,14 +19,16 @@ type Config struct {
 	BotToken       string         `json:"bot_token"`
 	ChannelID      string         `json:"channel_id"`
 	TrackedUserIDs []string       `json:"tracked_user_ids"`
+	StarterPrompt  string         `json:"starter_prompt"`
 	Timezone       string         `json:"timezone"`
 	Location       *time.Location `json:"-"`
 }
 
 const (
-	exitSuccess      = 0
-	exitRuntimeError = 1
-	exitConfigError  = 2
+	defaultStarterPrompt = "Enter your Wordle score here"
+	exitSuccess          = 0
+	exitRuntimeError     = 1
+	exitConfigError      = 2
 )
 
 var (
@@ -39,6 +41,9 @@ var (
 	messagesInChannelFn  = messagesInChannel
 	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
 		return s.ChannelMessageSend(channelID, content)
+	}
+	createThreadFromMessageFn = func(s *discordgo.Session, channelID, messageID, name string) (*discordgo.Channel, error) {
+		return s.MessageThreadStart(channelID, messageID, name, 1440)
 	}
 )
 
@@ -73,6 +78,7 @@ func loadConfig(path string) (*Config, error) {
 func validateConfig(c *Config) error {
 	c.BotToken = normalizeBotToken(c.BotToken)
 	c.ChannelID = strings.TrimSpace(c.ChannelID)
+	c.StarterPrompt = strings.TrimSpace(c.StarterPrompt)
 	c.Timezone = strings.TrimSpace(c.Timezone)
 
 	if c.BotToken == "" {
@@ -100,6 +106,10 @@ func validateConfig(c *Config) error {
 		normalizedUserIDs = append(normalizedUserIDs, id)
 	}
 	c.TrackedUserIDs = normalizedUserIDs
+
+	if c.StarterPrompt == "" {
+		c.StarterPrompt = defaultStarterPrompt
+	}
 
 	if c.Timezone == "" {
 		return errors.New("timezone is required")
@@ -134,13 +144,17 @@ func listActiveThreads(s *discordgo.Session, channelID string) ([]*discordgo.Cha
 }
 
 func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string) {
-	want := t.Format("Jan 2")
+	want := threadTitle(t)
 	for _, th := range threads {
 		if th != nil && th.Name == want {
 			return th.ID, th.Name
 		}
 	}
 	return "", ""
+}
+
+func threadTitle(t time.Time) string {
+	return t.Format("Jan 2")
 }
 
 func messagesInChannel(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
@@ -182,7 +196,8 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 	}
 
 	today := currentDay(now(), cfg.Location)
-	infoLogger.Printf("starting run for current_date=%s timezone=%s", today.Format("Jan 2"), cfg.Timezone)
+	todayTitle := threadTitle(today)
+	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
 
 	dg, err := newDiscordSession(cfg.BotToken)
 	if err != nil {
@@ -198,7 +213,16 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 
 	threadID, threadName := findTodayThread(threads, today)
 	if threadID == "" {
-		infoLogger.Printf("no active thread found for current_date=%s; exiting without reminder", today.Format("Jan 2"))
+		starterMessage, err := sendChannelMessageFn(dg, cfg.ChannelID, cfg.StarterPrompt)
+		if err != nil {
+			errorLogger.Printf("failed to send thread starter message: %v", err)
+			return exitRuntimeError
+		}
+		if _, err := createThreadFromMessageFn(dg, cfg.ChannelID, starterMessage.ID, todayTitle); err != nil {
+			errorLogger.Printf("failed to create daily thread: %v", err)
+			return exitRuntimeError
+		}
+		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
 		return exitSuccess
 	}
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)

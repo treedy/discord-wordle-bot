@@ -1,6 +1,7 @@
 {
   "bot_token": "Bot TOKEN_GOES_HERE",
   "channel_id": "PARENT_CHANNEL_ID",
+  "starter_prompt": "Enter your Wordle score here",
   "tracked_user_ids": [
     "123456789012345678",
     "234567890123456789",

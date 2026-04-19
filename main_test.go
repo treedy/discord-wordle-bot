@@ -141,10 +141,10 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	}
 
 	logOutput := stdout.String()
-	if !strings.Contains(logOutput, "thread_date=Apr 18 timezone=America/New_York") {
+	if !strings.Contains(logOutput, "current_date=Apr 18 timezone=America/New_York") {
 		t.Fatalf("stdout = %q, want timezone-based thread date log", logOutput)
 	}
-	if !strings.Contains(logOutput, "no active thread found for thread_date=Apr 18; exiting without reminder") {
+	if !strings.Contains(logOutput, "no active thread found for current_date=Apr 18; exiting without reminder") {
 		t.Fatalf("stdout = %q, want no-thread success log", logOutput)
 	}
 }

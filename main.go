@@ -206,7 +206,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 	}
 
 	today := currentDay(now(), cfg.Location)
-	infoLogger.Printf("starting run for thread_date=%s timezone=%s", today.Format("Jan 2"), cfg.Timezone)
+	infoLogger.Printf("starting run for current_date=%s timezone=%s", today.Format("Jan 2"), cfg.Timezone)
 
 	dg, err := newDiscordSession(cfg.BotToken)
 	if err != nil {
@@ -222,7 +222,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 
 	threadID, threadName := findTodayThread(threads, today)
 	if threadID == "" {
-		infoLogger.Printf("no active thread found for thread_date=%s; exiting without reminder", today.Format("Jan 2"))
+		infoLogger.Printf("no active thread found for current_date=%s; exiting without reminder", today.Format("Jan 2"))
 		return exitSuccess
 	}
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)

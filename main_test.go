@@ -107,6 +107,33 @@ func TestLoadConfigRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestThreadTitleFormatsMonthAndDay(t *testing.T) {
+	tests := []struct {
+		name string
+		at   time.Time
+		want string
+	}{
+		{
+			name: "single digit day",
+			at:   time.Date(2026, time.January, 2, 0, 0, 0, 0, time.UTC),
+			want: "Jan 2",
+		},
+		{
+			name: "double digit day",
+			at:   time.Date(2026, time.November, 18, 0, 0, 0, 0, time.UTC),
+			want: "Nov 18",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := threadTitle(tt.at); got != tt.want {
+				t.Fatalf("threadTitle() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	configPath := writeTempConfig(t, `{
   "bot_token": "secret-token",

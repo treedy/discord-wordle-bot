@@ -114,15 +114,46 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 
 	originalNewDiscordSession := newDiscordSession
 	originalListActiveThreads := listActiveThreadsFn
+	originalSendChannelMessage := sendChannelMessageFn
+	originalCreateThreadFromMessage := createThreadFromMessageFn
+	originalMessagesInChannel := messagesInChannelFn
 	t.Cleanup(func() {
 		newDiscordSession = originalNewDiscordSession
 		listActiveThreadsFn = originalListActiveThreads
+		sendChannelMessageFn = originalSendChannelMessage
+		createThreadFromMessageFn = originalCreateThreadFromMessage
+		messagesInChannelFn = originalMessagesInChannel
 	})
 
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return &discordgo.Session{}, nil
 	}
 	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return nil, nil
+	}
+	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
+		if channelID != "123456789012345678" {
+			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "123456789012345678")
+		}
+		if content != "Enter your Wordle score here" {
+			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, "Enter your Wordle score here")
+		}
+		return &discordgo.Message{ID: "starter-message-id"}, nil
+	}
+	createThreadFromMessageFn = func(s *discordgo.Session, channelID, messageID, name string) (*discordgo.Channel, error) {
+		if channelID != "123456789012345678" {
+			t.Fatalf("createThreadFromMessageFn() channelID = %q, want %q", channelID, "123456789012345678")
+		}
+		if messageID != "starter-message-id" {
+			t.Fatalf("createThreadFromMessageFn() messageID = %q, want %q", messageID, "starter-message-id")
+		}
+		if name != "Apr 18" {
+			t.Fatalf("createThreadFromMessageFn() name = %q, want %q", name, "Apr 18")
+		}
+		return &discordgo.Channel{ID: "new-thread-id", Name: name}, nil
+	}
+	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
+		t.Fatalf("messagesInChannelFn() should not be called when thread is created during this run")
 		return nil, nil
 	}
 
@@ -144,8 +175,8 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	if !strings.Contains(logOutput, "current_date=Apr 18 timezone=America/New_York") {
 		t.Fatalf("stdout = %q, want timezone-based thread date log", logOutput)
 	}
-	if !strings.Contains(logOutput, "no active thread found for current_date=Apr 18; exiting without reminder") {
-		t.Fatalf("stdout = %q, want no-thread success log", logOutput)
+	if !strings.Contains(logOutput, `created daily thread name="Apr 18" for current_date=Apr 18; exiting without reminder`) {
+		t.Fatalf("stdout = %q, want created-thread success log", logOutput)
 	}
 }
 

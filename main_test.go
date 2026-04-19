@@ -134,6 +134,7 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
 		return nil, nil
 	}
+	messagesInChannelCalled := false
 	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
 		if channelID != "123456789012345678" {
 			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "123456789012345678")
@@ -156,7 +157,7 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 		return &discordgo.Channel{ID: "new-thread-id", Name: name}, nil
 	}
 	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
-		t.Fatalf("messagesInChannelFn() should not be called when thread is created during this run")
+		messagesInChannelCalled = true
 		return nil, nil
 	}
 
@@ -180,6 +181,9 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, `created daily thread name="Apr 18" for current_date=Apr 18; exiting without reminder`) {
 		t.Fatalf("stdout = %q, want created-thread success log", logOutput)
+	}
+	if messagesInChannelCalled {
+		t.Fatal("messagesInChannelFn() should not be called when thread is created during this run")
 	}
 }
 
@@ -210,8 +214,9 @@ func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
 	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
 		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
 	}
+	createThreadFromMessageCalled := false
 	createThreadFromMessageFn = func(s *discordgo.Session, channelID, messageID, name string) (*discordgo.Channel, error) {
-		t.Fatalf("createThreadFromMessageFn() should not be called when today's thread already exists")
+		createThreadFromMessageCalled = true
 		return nil, nil
 	}
 	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
@@ -251,6 +256,9 @@ func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "posted reminder for 1 missing user(s)") {
 		t.Fatalf("stdout = %q, want reminder log", stdout.String())
+	}
+	if createThreadFromMessageCalled {
+		t.Fatal("createThreadFromMessageFn() should not be called when today's thread already exists")
 	}
 }
 

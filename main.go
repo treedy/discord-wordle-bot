@@ -128,7 +128,7 @@ func listActiveThreads(channelID, botToken string) ([]map[string]interface{}, er
 	url := fmt.Sprintf("https://discord.com/api/v10/channels/%s/threads/active", channelID)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create active threads request: %w", err)
+		return nil, fmt.Errorf("failed to create HTTP request for active threads: %w", err)
 	}
 	req.Header.Set("Authorization", "Bot "+normalizeBotToken(botToken))
 	req.Header.Set("User-Agent", "discord-wordle-bot")

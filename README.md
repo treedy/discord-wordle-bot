@@ -17,6 +17,20 @@ go build -o discord-wordle-bot ./
 ./discord-wordle-bot --config config.json
 ```
 
+4. (Optional) Build and run with Docker
+
+Build the image:
+
+```bash
+docker build -t discord-wordle-bot .
+```
+
+Run the container (mount your local `config.json` over the container config):
+
+```bash
+docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot --config /app/config.json
+```
+
 The CLI exits with status `0` when it completes normally (including when there is nothing to post), `2` for configuration errors, and `1` for Discord/API runtime failures. It logs the resolved thread date and action taken so cron output is operationally useful.
 # discord-wordle-bot
 A bot for discord that reminds users to enter their Wordle for the day and other useful chores

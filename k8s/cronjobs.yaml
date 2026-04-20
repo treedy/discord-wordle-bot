@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: discord-wordle-bot-first-run
+spec:
+  schedule: "2 0 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: discord-wordle-bot
+              image: your-registry/discord-wordle-bot:latest
+              imagePullPolicy: IfNotPresent
+              args: ["--config", "/app/config.json"]
+              volumeMounts:
+                - name: config
+                  mountPath: /app/config.json
+                  subPath: config.json
+          volumes:
+            - name: config
+              secret:
+                secretName: discord-wordle-bot-secret
+                items:
+                  - key: config.json
+                    path: config.json
+
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: discord-wordle-bot-second-run
+spec:
+  schedule: "0 17 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 3600
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: discord-wordle-bot
+              image: your-registry/discord-wordle-bot:latest
+              imagePullPolicy: IfNotPresent
+              args: ["--config", "/app/config.json"]
+              volumeMounts:
+                - name: config
+                  mountPath: /app/config.json
+                  subPath: config.json
+          volumes:
+            - name: config
+              secret:
+                secretName: discord-wordle-bot-secret
+                items:
+                  - key: config.json
+                    path: config.json

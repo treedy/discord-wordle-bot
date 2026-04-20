@@ -134,6 +134,353 @@ func TestThreadTitleFormatsMonthAndDay(t *testing.T) {
 	}
 }
 
+func TestValidateConfigCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         Config
+		wantErr        string
+		wantBotToken   string
+		wantChannelID  string
+		wantTrackedIDs []string
+		wantPrompt     string
+		wantTimezone   string
+	}{
+		{
+			name: "normalizes valid config",
+			config: Config{
+				BotToken:       "  Bot secret-token  ",
+				ChannelID:      "123456789012345678 ",
+				TrackedUserIDs: []string{" 234567890123456789 ", "345678901234567890"},
+				Timezone:       " America/New_York ",
+			},
+			wantBotToken:   "secret-token",
+			wantChannelID:  "123456789012345678",
+			wantTrackedIDs: []string{"234567890123456789", "345678901234567890"},
+			wantPrompt:     defaultStarterPrompt,
+			wantTimezone:   "America/New_York",
+		},
+		{
+			name: "rejects missing tracked users",
+			config: Config{
+				BotToken:  "secret-token",
+				ChannelID: "123456789012345678",
+				Timezone:  "America/New_York",
+			},
+			wantErr: "tracked_user_ids must contain at least one user ID",
+		},
+		{
+			name: "rejects invalid channel id",
+			config: Config{
+				BotToken:       "secret-token",
+				ChannelID:      "not-a-snowflake",
+				TrackedUserIDs: []string{"234567890123456789"},
+				Timezone:       "America/New_York",
+			},
+			wantErr: "channel_id must be a Discord snowflake",
+		},
+		{
+			name: "rejects invalid timezone",
+			config: Config{
+				BotToken:       "secret-token",
+				ChannelID:      "123456789012345678",
+				TrackedUserIDs: []string{"234567890123456789"},
+				Timezone:       "Mars/Phobos",
+			},
+			wantErr: `invalid timezone "Mars/Phobos"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.config
+
+			err := validateConfig(&cfg)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("validateConfig() error = nil, want non-nil")
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("validateConfig() error = %q, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateConfig() error = %v", err)
+			}
+
+			if cfg.BotToken != tt.wantBotToken {
+				t.Fatalf("BotToken = %q, want %q", cfg.BotToken, tt.wantBotToken)
+			}
+			if cfg.ChannelID != tt.wantChannelID {
+				t.Fatalf("ChannelID = %q, want %q", cfg.ChannelID, tt.wantChannelID)
+			}
+			if !sameStrings(cfg.TrackedUserIDs, tt.wantTrackedIDs) {
+				t.Fatalf("TrackedUserIDs = %v, want %v", cfg.TrackedUserIDs, tt.wantTrackedIDs)
+			}
+			if cfg.StarterPrompt != tt.wantPrompt {
+				t.Fatalf("StarterPrompt = %q, want %q", cfg.StarterPrompt, tt.wantPrompt)
+			}
+			if cfg.Timezone != tt.wantTimezone {
+				t.Fatalf("Timezone = %q, want %q", cfg.Timezone, tt.wantTimezone)
+			}
+			if cfg.Location == nil || cfg.Location.String() != tt.wantTimezone {
+				t.Fatalf("Location = %v, want %q", cfg.Location, tt.wantTimezone)
+			}
+		})
+	}
+}
+
+func TestCurrentDayUsesConfiguredLocation(t *testing.T) {
+	newYork, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		now      time.Time
+		location *time.Location
+		want     string
+	}{
+		{
+			name:     "new york previous calendar day",
+			now:      time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC),
+			location: newYork,
+			want:     "2026-04-18 22:30 EDT",
+		},
+		{
+			name:     "tokyo next calendar day",
+			now:      time.Date(2026, time.April, 18, 18, 30, 0, 0, time.UTC),
+			location: tokyo,
+			want:     "2026-04-19 03:30 JST",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := currentDay(tt.now, tt.location).Format("2006-01-02 15:04 MST"); got != tt.want {
+				t.Fatalf("currentDay() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindTodayThread(t *testing.T) {
+	today := time.Date(2026, time.April, 18, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		threads      []*discordgo.Channel
+		wantThreadID string
+		wantName     string
+	}{
+		{
+			name: "finds matching thread after non-matches",
+			threads: []*discordgo.Channel{
+				nil,
+				{ID: "old-thread-id", Name: "Apr 17"},
+				{ID: "today-thread-id", Name: "Apr 18"},
+			},
+			wantThreadID: "today-thread-id",
+			wantName:     "Apr 18",
+		},
+		{
+			name: "returns empty when thread missing",
+			threads: []*discordgo.Channel{
+				{ID: "other-thread-id", Name: "Apr 19"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotThreadID, gotName := findTodayThread(tt.threads, today)
+			if gotThreadID != tt.wantThreadID || gotName != tt.wantName {
+				t.Fatalf("findTodayThread() = (%q, %q), want (%q, %q)", gotThreadID, gotName, tt.wantThreadID, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestIsQualifyingSubmission(t *testing.T) {
+	tests := []struct {
+		name    string
+		message *discordgo.Message
+		want    bool
+	}{
+		{
+			name:    "nil message",
+			message: nil,
+			want:    false,
+		},
+		{
+			name:    "missing author",
+			message: &discordgo.Message{Content: "Wordle 123 4/6"},
+			want:    false,
+		},
+		{
+			name:    "empty author id",
+			message: &discordgo.Message{Author: &discordgo.User{}, Content: "Wordle 123 4/6"},
+			want:    false,
+		},
+		{
+			name: "reply is ignored",
+			message: &discordgo.Message{
+				Author:           &discordgo.User{ID: "234567890123456789"},
+				Content:          "Wordle 123 4/6",
+				MessageReference: &discordgo.MessageReference{MessageID: "parent-id"},
+			},
+			want: false,
+		},
+		{
+			name:    "top level wordle matches case insensitively",
+			message: &discordgo.Message{Author: &discordgo.User{ID: "234567890123456789"}, Content: "  wOrDlE 123 4/6"},
+			want:    true,
+		},
+		{
+			name:    "top level scoredle matches",
+			message: &discordgo.Message{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Scoredle 42 streak"},
+			want:    true,
+		},
+		{
+			name:    "embedded wordle text does not match",
+			message: &discordgo.Message{Author: &discordgo.User{ID: "234567890123456789"}, Content: "I did Wordle 123 4/6"},
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isQualifyingSubmission(tt.message); got != tt.want {
+				t.Fatalf("isQualifyingSubmission() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompletionStatus(t *testing.T) {
+	tests := []struct {
+		name         string
+		tracked      []string
+		messages     []*discordgo.Message
+		wantComplete []string
+		wantMissing  []string
+	}{
+		{
+			name:    "qualifying posts mark tracked users complete in tracked order",
+			tracked: []string{"234567890123456789", "345678901234567890", "456789012345678901"},
+			messages: []*discordgo.Message{
+				{Author: &discordgo.User{ID: "345678901234567890"}, Content: "Scoredle 123 4/6"},
+				{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
+				{Author: &discordgo.User{ID: "999999999999999999"}, Content: "Wordle 999 1/6"},
+			},
+			wantComplete: []string{"234567890123456789", "345678901234567890"},
+			wantMissing:  []string{"456789012345678901"},
+		},
+		{
+			name:    "replies and non matching text stay missing",
+			tracked: []string{"234567890123456789", "345678901234567890"},
+			messages: []*discordgo.Message{
+				{
+					Author:           &discordgo.User{ID: "234567890123456789"},
+					Content:          "Wordle 123 4/6",
+					MessageReference: &discordgo.MessageReference{MessageID: "parent-id"},
+				},
+				{Author: &discordgo.User{ID: "345678901234567890"}, Content: "hello"},
+				nil,
+			},
+			wantMissing: []string{"234567890123456789", "345678901234567890"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotComplete, gotMissing := completionStatus(tt.tracked, tt.messages)
+			if !sameStrings(gotComplete, tt.wantComplete) {
+				t.Fatalf("completionStatus() complete = %v, want %v", gotComplete, tt.wantComplete)
+			}
+			if !sameStrings(gotMissing, tt.wantMissing) {
+				t.Fatalf("completionStatus() missing = %v, want %v", gotMissing, tt.wantMissing)
+			}
+		})
+	}
+}
+
+func TestHasSameDayReminder(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	today := time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name      string
+		messages  []*discordgo.Message
+		botUserID string
+		want      bool
+	}{
+		{
+			name:      "ignores nils and non-bot reminders",
+			botUserID: "bot-user-id",
+			messages: []*discordgo.Message{
+				nil,
+				{Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle."},
+				{Author: &discordgo.User{ID: "other-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle.", Timestamp: today},
+			},
+			want: false,
+		},
+		{
+			name:      "suppresses duplicate on same local calendar day",
+			botUserID: "bot-user-id",
+			messages: []*discordgo.Message{
+				{
+					Author:    &discordgo.User{ID: "bot-user-id"},
+					Content:   "Reminder: <@1> still needs to post today's Wordle or Scoredle.",
+					Timestamp: time.Date(2026, time.April, 19, 1, 0, 0, 0, time.UTC),
+				},
+			},
+			want: true,
+		},
+		{
+			name:      "allows reminder from previous local calendar day",
+			botUserID: "bot-user-id",
+			messages: []*discordgo.Message{
+				{
+					Author:    &discordgo.User{ID: "bot-user-id"},
+					Content:   "Reminder: <@1> still needs to post today's Wordle or Scoredle.",
+					Timestamp: time.Date(2026, time.April, 18, 3, 0, 0, 0, time.UTC),
+				},
+			},
+			want: false,
+		},
+		{
+			name:      "ignores bot posts that are not reminders",
+			botUserID: "bot-user-id",
+			messages: []*discordgo.Message{
+				{
+					Author:    &discordgo.User{ID: "bot-user-id"},
+					Content:   "hello world",
+					Timestamp: today,
+				},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasSameDayReminder(tt.messages, tt.botUserID, today, location); got != tt.want {
+				t.Fatalf("hasSameDayReminder() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	configPath := writeTempConfig(t, `{
   "bot_token": "secret-token",

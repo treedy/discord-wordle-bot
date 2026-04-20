@@ -214,7 +214,31 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	}
 }
 
-func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
+func TestCompletionStatusUsesOnlyQualifyingTopLevelMessages(t *testing.T) {
+	complete, missing := completionStatus(
+		[]string{"234567890123456789", "345678901234567890", "456789012345678901"},
+		[]*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "  wordle 123 4/6"},
+			{
+				Author:           &discordgo.User{ID: "345678901234567890"},
+				Content:          "Scoredle 42 streak",
+				MessageReference: &discordgo.MessageReference{MessageID: "top-level-message-id"},
+			},
+			{Author: &discordgo.User{ID: "345678901234567890"}, Content: "   scoredle 42 streak"},
+			{Author: &discordgo.User{ID: "456789012345678901"}, Content: "I did Wordle 123 4/6"},
+			{Author: &discordgo.User{ID: "999999999999999999"}, Content: "Wordle 999 1/6"},
+		},
+	)
+
+	if got, want := complete, []string{"234567890123456789", "345678901234567890"}; !sameStrings(got, want) {
+		t.Fatalf("completionStatus() complete = %v, want %v", got, want)
+	}
+	if got, want := missing, []string{"456789012345678901"}; !sameStrings(got, want) {
+		t.Fatalf("completionStatus() missing = %v, want %v", got, want)
+	}
+}
+
+func TestRunReportsCompletionForTrackedUsersInExistingThread(t *testing.T) {
 	configPath := writeTempConfig(t, `{
   "bot_token": "secret-token",
   "channel_id": "123456789012345678",
@@ -251,18 +275,18 @@ func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
 			t.Fatalf("messagesInChannelFn() channelID = %q, want %q", channelID, "existing-thread-id")
 		}
 		return []*discordgo.Message{
-			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
+			{
+				Author:           &discordgo.User{ID: "234567890123456789"},
+				Content:          "Scordle 123 4/6",
+				MessageReference: &discordgo.MessageReference{MessageID: "another-message-id"},
+			},
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: " Wordle 123 4/6"},
 			{Author: &discordgo.User{ID: "999999999999999999"}, Content: "hello"},
 		}, nil
 	}
 	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-		if channelID != "existing-thread-id" {
-			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "existing-thread-id")
-		}
-		if content != "Hey <@345678901234567890>! You haven't completed Wordle today" {
-			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, "Hey <@345678901234567890>! You haven't completed Wordle today")
-		}
-		return &discordgo.Message{ID: "reminder-id"}, nil
+		t.Fatal("sendChannelMessageFn() should not be called when reporting completion")
+		return nil, nil
 	}
 
 	var stdout bytes.Buffer
@@ -281,12 +305,24 @@ func TestRunPostsReminderForMissingUsersInExistingThread(t *testing.T) {
 	if !strings.Contains(stdout.String(), `found active thread name="Apr 18" id=existing-thread-id`) {
 		t.Fatalf("stdout = %q, want found-thread log", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "posted reminder for 1 missing user(s)") {
-		t.Fatalf("stdout = %q, want reminder log", stdout.String())
+	if !strings.Contains(stdout.String(), "computed completion complete=[234567890123456789] missing=[345678901234567890]") {
+		t.Fatalf("stdout = %q, want completion log", stdout.String())
 	}
 	if createThreadFromMessageCalled {
 		t.Fatal("createThreadFromMessageFn() should not be called when today's thread already exists")
 	}
+}
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func writeTempConfig(t *testing.T, content string) string {

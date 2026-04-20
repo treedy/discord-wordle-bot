@@ -33,7 +33,7 @@ const (
 
 var (
 	discordIDPattern  = regexp.MustCompile(`^\d+$`)
-	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scordle)`)
+	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scoredle)`)
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return discordgo.New("Bot " + botToken)
 	}
@@ -178,6 +178,39 @@ func messagesInChannel(s *discordgo.Session, channelID string) ([]*discordgo.Mes
 	return all, nil
 }
 
+func isTopLevelMessage(m *discordgo.Message) bool {
+	return m != nil && (m.MessageReference == nil || m.MessageReference.MessageID == "")
+}
+
+func isQualifyingSubmission(m *discordgo.Message) bool {
+	return m != nil &&
+		m.Author != nil &&
+		m.Author.ID != "" &&
+		isTopLevelMessage(m) &&
+		submissionPattern.MatchString(m.Content)
+}
+
+func completionStatus(trackedUserIDs []string, msgs []*discordgo.Message) ([]string, []string) {
+	posted := make(map[string]bool)
+	for _, m := range msgs {
+		if isQualifyingSubmission(m) {
+			posted[m.Author.ID] = true
+		}
+	}
+
+	complete := make([]string, 0, len(trackedUserIDs))
+	missing := make([]string, 0, len(trackedUserIDs))
+	for _, id := range trackedUserIDs {
+		if posted[id] {
+			complete = append(complete, id)
+			continue
+		}
+		missing = append(missing, id)
+	}
+
+	return complete, missing
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config.json")
 	flag.Parse()
@@ -233,49 +266,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 		return exitRuntimeError
 	}
 
-	posted := make(map[string]bool)
-	for _, m := range msgs {
-		if m.Author == nil || m.Author.ID == "" {
-			continue
-		}
-		if submissionPattern.MatchString(m.Content) {
-			posted[m.Author.ID] = true
-		}
-	}
-
-	var missing []string
-	for _, id := range cfg.TrackedUserIDs {
-		if !posted[id] {
-			missing = append(missing, id)
-		}
-	}
-
-	if len(missing) == 0 {
-		infoLogger.Print("all tracked users have already posted; exiting without reminder")
-		return exitSuccess
-	}
-
-	mentions := make([]string, len(missing))
-	for i, id := range missing {
-		mentions[i] = fmt.Sprintf("<@%s>", id)
-	}
-
-	var mentionStr string
-	switch len(mentions) {
-	case 1:
-		mentionStr = mentions[0]
-	case 2:
-		mentionStr = mentions[0] + " and " + mentions[1]
-	default:
-		mentionStr = strings.Join(mentions[:len(mentions)-1], ", ") + ", and " + mentions[len(mentions)-1]
-	}
-
-	content := fmt.Sprintf("Hey %s! You haven't completed Wordle today", mentionStr)
-	if _, err := sendChannelMessageFn(dg, threadID, content); err != nil {
-		errorLogger.Printf("failed to send reminder message: %v", err)
-		return exitRuntimeError
-	}
-
-	infoLogger.Printf("posted reminder for %d missing user(s)", len(missing))
+	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
+	infoLogger.Printf("computed completion complete=%v missing=%v", complete, missing)
 	return exitSuccess
 }

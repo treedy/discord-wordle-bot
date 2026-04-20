@@ -33,7 +33,7 @@ const (
 
 var (
 	discordIDPattern  = regexp.MustCompile(`^\d+$`)
-	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scordle)`)
+	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scoredle)`)
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return discordgo.New("Bot " + botToken)
 	}

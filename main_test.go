@@ -221,10 +221,10 @@ func TestCompletionStatusUsesOnlyQualifyingTopLevelMessages(t *testing.T) {
 			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "  wordle 123 4/6"},
 			{
 				Author:           &discordgo.User{ID: "345678901234567890"},
-				Content:          "Scordle 42 streak",
+				Content:          "Scoredle 42 streak",
 				MessageReference: &discordgo.MessageReference{MessageID: "top-level-message-id"},
 			},
-			{Author: &discordgo.User{ID: "345678901234567890"}, Content: "   scordle 42 streak"},
+			{Author: &discordgo.User{ID: "345678901234567890"}, Content: "   scoredle 42 streak"},
 			{Author: &discordgo.User{ID: "456789012345678901"}, Content: "I did Wordle 123 4/6"},
 			{Author: &discordgo.User{ID: "999999999999999999"}, Content: "Wordle 999 1/6"},
 		},

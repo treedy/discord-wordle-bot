@@ -34,8 +34,12 @@ const (
 var (
 	discordIDPattern  = regexp.MustCompile(`^\d+$`)
 	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scoredle)`)
+	reminderPattern   = regexp.MustCompile(`(?i)^\s*Reminder:`)
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return discordgo.New("Bot " + botToken)
+	}
+	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
+		return s.User("@me")
 	}
 	listActiveThreadsFn  = listActiveThreads
 	messagesInChannelFn  = messagesInChannel
@@ -211,6 +215,59 @@ func completionStatus(trackedUserIDs []string, msgs []*discordgo.Message) ([]str
 	return complete, missing
 }
 
+func formatUserMentions(userIDs []string) string {
+	if len(userIDs) == 0 {
+		return ""
+	}
+
+	mentions := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		mentions = append(mentions, "<@"+id+">")
+	}
+
+	switch len(mentions) {
+	case 1:
+		return mentions[0]
+	case 2:
+		return mentions[0] + " and " + mentions[1]
+	default:
+		return strings.Join(mentions[:len(mentions)-1], ", ") + ", and " + mentions[len(mentions)-1]
+	}
+}
+
+func formatReminderMessage(missingUserIDs []string) string {
+	mentions := formatUserMentions(missingUserIDs)
+	if len(missingUserIDs) == 1 {
+		return fmt.Sprintf("Reminder: %s still needs to post today's Wordle or Scoredle.", mentions)
+	}
+	return fmt.Sprintf("Reminder: %s still need to post today's Wordle or Scoredle.", mentions)
+}
+
+func sameCalendarDay(a, b time.Time, location *time.Location) bool {
+	ay, am, ad := a.In(location).Date()
+	by, bm, bd := b.In(location).Date()
+	return ay == by && am == bm && ad == bd
+}
+
+func hasSameDayReminder(msgs []*discordgo.Message, botUserID string, today time.Time, location *time.Location) bool {
+	for _, m := range msgs {
+		if m == nil || m.Author == nil {
+			continue
+		}
+		if m.Author.ID != botUserID {
+			continue
+		}
+		if !reminderPattern.MatchString(m.Content) {
+			continue
+		}
+		if !sameCalendarDay(m.Timestamp, today, location) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config.json")
 	flag.Parse()
@@ -268,5 +325,28 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 
 	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
 	infoLogger.Printf("computed completion complete=%v missing=%v", complete, missing)
+
+	if len(missing) == 0 {
+		infoLogger.Printf("no tracked users missing; skipping reminder")
+		return exitSuccess
+	}
+
+	currentUser, err := currentUserFn(dg)
+	if err != nil {
+		errorLogger.Printf("failed to resolve current bot user: %v", err)
+		return exitRuntimeError
+	}
+
+	if hasSameDayReminder(msgs, currentUser.ID, today, cfg.Location) {
+		infoLogger.Printf("same-day reminder already exists in thread; skipping duplicate reminder")
+		return exitSuccess
+	}
+
+	reminder := formatReminderMessage(missing)
+	if _, err := sendChannelMessageFn(dg, threadID, reminder); err != nil {
+		errorLogger.Printf("failed to post reminder: %v", err)
+		return exitRuntimeError
+	}
+	infoLogger.Printf("posted reminder for missing=%v", missing)
 	return exitSuccess
 }

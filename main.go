@@ -41,12 +41,28 @@ var (
 	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
 		return s.User("@me")
 	}
-	listActiveThreadsFn  = listActiveThreads
+	listActiveThreadsFn = listActiveThreads
+	createThreadFn      = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
+		return s.ThreadStart(channelID, name, discordgo.ChannelTypeGuildPublicThread, 1440)
+	}
 	messagesInChannelFn  = messagesInChannel
 	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
 		return s.ChannelMessageSend(channelID, content)
 	}
 )
+
+type dailyThreadError struct {
+	op  string
+	err error
+}
+
+func (e *dailyThreadError) Error() string {
+	return e.op + ": " + e.err.Error()
+}
+
+func (e *dailyThreadError) Unwrap() error {
+	return e.err
+}
 
 func loadConfig(path string) (*Config, error) {
 	f, err := os.Open(path)
@@ -265,6 +281,19 @@ func hasSameDayReminder(msgs []*discordgo.Message, botUserID string, today time.
 	return false
 }
 
+func createDailyThread(s *discordgo.Session, channelID, threadName, starterPrompt string) (*discordgo.Channel, error) {
+	threadChannel, err := createThreadFn(s, channelID, threadName)
+	if err != nil {
+		return nil, &dailyThreadError{op: "create thread", err: err}
+	}
+
+	if _, err := sendChannelMessageFn(s, threadChannel.ID, starterPrompt); err != nil {
+		return nil, &dailyThreadError{op: "send starter prompt", err: err}
+	}
+
+	return threadChannel, nil
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.json", "path to config.json")
 	flag.Parse()
@@ -301,13 +330,13 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 	// If we don't find today's thread, create the thread then send 1 message to it
 	threadID, threadName := findTodayThread(threads, today)
 	if threadID == "" {
-		threadChannel, err := dg.ThreadStart(cfg.ChannelID, todayTitle, discordgo.ChannelTypeGuildPublicThread, 1440)
-		if err != nil {
+		if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
+			var threadErr *dailyThreadError
+			if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
+				errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
+				return exitRuntimeError
+			}
 			errorLogger.Printf("failed to create daily thread: %v", err)
-			return exitRuntimeError
-		}
-		if _, err := dg.ChannelMessageSend(threadChannel.ID, cfg.StarterPrompt); err != nil {
-			errorLogger.Printf("failed to send thread starter message: %v", err)
 			return exitRuntimeError
 		}
 		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)

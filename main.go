@@ -29,6 +29,9 @@ const (
 	exitSuccess          = 0
 	exitRuntimeError     = 1
 	exitConfigError      = 2
+
+	createThreadCommand  = "create-thread"
+	sendRemindersCommand = "send-reminders"
 )
 
 var (
@@ -295,13 +298,54 @@ func createDailyThread(s *discordgo.Session, channelID, threadName, starterPromp
 }
 
 func main() {
-	cfgPath := flag.String("config", "config.json", "path to config.json")
-	flag.Parse()
+	// Provide simple subcommands: create-thread, send-reminders
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(exitConfigError)
+	}
 
-	os.Exit(run(*cfgPath, os.Stdout, os.Stderr, time.Now))
+	cmd := os.Args[1]
+
+	const configFilePath = "config.json"
+	configFilePathDesc := fmt.Sprintf("path to %s", configFilePath)
+
+	createCmd := flag.NewFlagSet(createThreadCommand, flag.ExitOnError)
+	createCfg := createCmd.String("config", configFilePath, configFilePathDesc)
+
+	sendCmd := flag.NewFlagSet(sendRemindersCommand, flag.ExitOnError)
+	sendCfg := sendCmd.String("config", configFilePath, configFilePathDesc)
+
+	switch cmd {
+	case "help", "-h", "--help":
+		usage()
+		os.Exit(exitSuccess)
+	case createThreadCommand:
+		createCmd.Parse(os.Args[2:])
+		os.Exit(runMode(*createCfg, os.Stdout, os.Stderr, time.Now, createThreadCommand))
+	case sendRemindersCommand:
+		sendCmd.Parse(os.Args[2:])
+		os.Exit(runMode(*sendCfg, os.Stdout, os.Stderr, time.Now, sendRemindersCommand))
+	default:
+		usage()
+		os.Exit(exitConfigError)
+	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage: %s <command> [options]\n\n", os.Args[0])
+	fmt.Fprintln(os.Stderr, "Commands:")
+	fmt.Fprintf(os.Stderr, "  %s  Create today's thread if it doesn't exist\n", createThreadCommand)
+	fmt.Fprintf(os.Stderr, "  %s  Send reminders for missing users in today's thread\n", sendRemindersCommand)
+	fmt.Fprintln(os.Stderr, "  help            Show this help message")
+	fmt.Fprintln(os.Stderr, "\nGlobal options:")
+	flag.PrintDefaults()
 }
 
 func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
+	return runMode(cfgPath, stdout, stderr, now, "both")
+}
+
+func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
@@ -327,9 +371,38 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 		return exitRuntimeError
 	}
 
-	// If we don't find today's thread, create the thread then send 1 message to it
 	threadID, threadName := findTodayThread(threads, today)
-	if threadID == "" {
+
+	// Handle create-thread mode: create today's thread if missing, then exit
+	if mode == createThreadCommand {
+		if threadID == "" {
+			if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
+				var threadErr *dailyThreadError
+				if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
+					errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
+					return exitRuntimeError
+				}
+				errorLogger.Printf("failed to create daily thread: %v", err)
+				return exitRuntimeError
+			}
+			infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
+			return exitSuccess
+		}
+		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
+		return exitSuccess
+	}
+
+	// For send-reminders mode, require the thread to already exist
+	if mode == sendRemindersCommand {
+		if threadID == "" {
+			errorLogger.Printf("no active thread for today (%s); run create-thread first", todayTitle)
+			return exitRuntimeError
+		}
+	}
+
+	// For "both" mode (default), preserve prior behavior: create thread then exit,
+	// otherwise proceed to reminders.
+	if mode == "both" && threadID == "" {
 		if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
 			var threadErr *dailyThreadError
 			if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
@@ -342,6 +415,7 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
 		return exitSuccess
 	}
+
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
 
 	msgs, err := messagesInChannelFn(dg, threadID)

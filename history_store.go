@@ -158,7 +158,6 @@ func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs
 		}
 		if submittedAt, ok := earliestTrackedSubmissions[userID]; ok {
 			timestamp := submittedAt
-			record.Guesses = 0
 			record.SubmittedAt = &timestamp
 			record.Source = "tracked-submission"
 		}

@@ -11,6 +11,55 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+func TestEarliestQualifyingTrackedSubmissionsUsesEarliestTrackedTimestamp(t *testing.T) {
+	earlier := time.Date(2026, time.April, 18, 8, 15, 0, 0, time.UTC)
+	later := earlier.Add(2 * time.Hour)
+
+	got := earliestQualifyingTrackedSubmissions(
+		[]string{"234567890123456789"},
+		[]*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6", Timestamp: later},
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 3/6", Timestamp: earlier},
+			{Author: &discordgo.User{ID: "345678901234567890"}, Content: "Wordle 123 2/6", Timestamp: earlier},
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 1/6"},
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "I did Wordle 123 1/6", Timestamp: earlier},
+		},
+	)
+
+	if len(got) != 1 {
+		t.Fatalf("len(earliestQualifyingTrackedSubmissions()) = %d, want %d", len(got), 1)
+	}
+	if got["234567890123456789"] != earlier {
+		t.Fatalf("earliestQualifyingTrackedSubmissions()[tracked] = %v, want %v", got["234567890123456789"], earlier)
+	}
+}
+
+func TestBuildScanHistoryRecordsUsesTrackedSubmissionAndMissRows(t *testing.T) {
+	targetDate := time.Date(2026, time.April, 18, 0, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
+	submittedAt := time.Date(2026, time.April, 18, 8, 15, 0, 0, time.FixedZone("EDT", -4*60*60))
+
+	submissions, reminder := buildScanHistoryRecords(
+		targetDate,
+		[]string{"234567890123456789", "345678901234567890"},
+		[]*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6", Timestamp: submittedAt},
+		},
+	)
+
+	if len(submissions) != 2 {
+		t.Fatalf("len(buildScanHistoryRecords() submissions) = %d, want %d", len(submissions), 2)
+	}
+	if submissions[0].UserID != "234567890123456789" || submissions[0].Guesses != -1 || submissions[0].SubmittedAt == nil || !submissions[0].SubmittedAt.Equal(submittedAt) || submissions[0].Source != "tracked-submission" {
+		t.Fatalf("first submission = %+v, want tracked-submission with timestamp and unresolved guesses", submissions[0])
+	}
+	if submissions[1].UserID != "345678901234567890" || submissions[1].Guesses != -1 || submissions[1].SubmittedAt != nil || submissions[1].Source != "tracked-missing" {
+		t.Fatalf("second submission = %+v, want tracked-missing miss row", submissions[1])
+	}
+	if !reminder.ThreadDate.Equal(targetDate) || reminder.RemindedAt != nil {
+		t.Fatalf("reminder = %+v, want target date and nil reminded_at", reminder)
+	}
+}
+
 func TestHistoryStoreAutoInitializesSchemaAndUpsertsDeterministically(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "history.db")
 
@@ -228,8 +277,8 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(submission rows) = %d, want %d", len(got), 2)
 	}
-	if got[0].userID != "234567890123456789" || got[0].guesses != 0 || !got[0].submittedAt.Valid || got[0].submittedAt.String != submittedAt.UTC().Format(time.RFC3339) || got[0].source != "tracked-submission" {
-		t.Fatalf("first submission row = %+v, want tracked submission with UTC timestamp", got[0])
+	if got[0].userID != "234567890123456789" || got[0].guesses != -1 || !got[0].submittedAt.Valid || got[0].submittedAt.String != submittedAt.UTC().Format(time.RFC3339) || got[0].source != "tracked-submission" {
+		t.Fatalf("first submission row = %+v, want tracked submission placeholder with UTC timestamp", got[0])
 	}
 	if got[1].userID != "345678901234567890" || got[1].guesses != -1 || got[1].submittedAt.Valid || got[1].source != "tracked-missing" {
 		t.Fatalf("second submission row = %+v, want tracked miss row", got[1])

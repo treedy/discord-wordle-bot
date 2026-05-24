@@ -35,6 +35,7 @@ const (
 	createThreadCommand  = "create-thread"
 	sendRemindersCommand = "send-reminders"
 	scanHistoryCommand   = "scan-history"
+	reportStatsCommand   = "report-stats"
 
 	scanDateLayout          = "2006-01-02"
 	archivedThreadsPageSize = 100
@@ -463,6 +464,14 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	scanDate := scanCmd.String("date", "", "target date in YYYY-MM-DD")
 	scanDBPath := scanCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
 
+	reportCmd := flag.NewFlagSet(reportStatsCommand, flag.ContinueOnError)
+	reportCmd.SetOutput(stderr)
+	reportCfg := reportCmd.String("config", configFilePath, configFilePathDesc)
+	reportPeriod := reportCmd.String("period", "", "reporting period")
+	reportDate := reportCmd.String("date", "", "target date in YYYY-MM-DD")
+	reportDBPath := reportCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
+	reportOutput := reportCmd.String("output", reportOutputStdout, "report output destination")
+
 	switch cmd {
 	case "help", "-h", "--help":
 		usage(stdout, programName)
@@ -482,6 +491,11 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 			return exitConfigError
 		}
 		return runScanHistory(*scanCfg, *scanDate, *scanDBPath, stdout, stderr)
+	case reportStatsCommand:
+		if err := reportCmd.Parse(args[2:]); err != nil {
+			return exitConfigError
+		}
+		return runReportStats(*reportCfg, *reportPeriod, *reportDate, *reportDBPath, *reportOutput, stdout, stderr)
 	default:
 		usage(stderr, programName)
 		return exitConfigError
@@ -494,6 +508,7 @@ func usage(w io.Writer, programName string) {
 	fmt.Fprintf(w, "  %s  Create today's thread if it doesn't exist\n", createThreadCommand)
 	fmt.Fprintf(w, "  %s  Send reminders for missing users in today's thread\n", sendRemindersCommand)
 	fmt.Fprintf(w, "  %s  Scan a specific day's thread history\n", scanHistoryCommand)
+	fmt.Fprintf(w, "  %s  Print a statistics report from stored history\n", reportStatsCommand)
 	fmt.Fprintln(w, "  help            Show this help message")
 }
 

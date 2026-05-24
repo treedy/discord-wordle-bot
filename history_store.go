@@ -222,8 +222,18 @@ func parseSubmissionGuessesFromFirstLine(content string) (int, bool) {
 	switch matches[1] {
 	case "X":
 		return 7, true
-	case "1", "2", "3", "4", "5", "6":
-		return int(matches[1][0] - '0'), true
+	case "1":
+		return 1, true
+	case "2":
+		return 2, true
+	case "3":
+		return 3, true
+	case "4":
+		return 4, true
+	case "5":
+		return 5, true
+	case "6":
+		return 6, true
 	default:
 		return 0, false
 	}

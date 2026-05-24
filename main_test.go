@@ -788,11 +788,13 @@ func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T
 	dbPath := filepath.Join(t.TempDir(), "history.db")
 
 	originalNewDiscordSession := newDiscordSession
+	originalCurrentUser := currentUserFn
 	originalListActiveThreads := listActiveThreadsFn
 	originalListArchivedThreads := listArchivedThreadsFn
 	originalMessagesInChannel := messagesInChannelFn
 	t.Cleanup(func() {
 		newDiscordSession = originalNewDiscordSession
+		currentUserFn = originalCurrentUser
 		listActiveThreadsFn = originalListActiveThreads
 		listArchivedThreadsFn = originalListArchivedThreads
 		messagesInChannelFn = originalMessagesInChannel
@@ -802,6 +804,9 @@ func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T
 
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return &discordgo.Session{}, nil
+	}
+	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
+		return &discordgo.User{ID: "bot-user-id"}, nil
 	}
 	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
 		return []*discordgo.Channel{
@@ -838,8 +843,11 @@ func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T
 	if !strings.Contains(stdout.String(), `found archived history thread name="Apr 18" id=`+expectedThreadID) {
 		t.Fatalf("stdout = %q, want archived thread log", stdout.String())
 	}
-	if !strings.Contains(stdout.String(), "scanned history complete=[234567890123456789] missing=[]") {
-		t.Fatalf("stdout = %q, want scan summary log", stdout.String())
+	if !strings.Contains(stdout.String(), "scan-history message summary complete=[234567890123456789] missing=[]") {
+		t.Fatalf("stdout = %q, want scan message summary log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `scan-history summary target_date=2026-04-18 thread_source=archived thread_id=`+expectedThreadID+` complete_count=1 missing_count=0 submission_rows=1 reminder_rows=1 reminder_timestamp_present=false`) {
+		t.Fatalf("stdout = %q, want scan-history summary log", stdout.String())
 	}
 }
 
@@ -893,6 +901,60 @@ func TestRunScanHistoryFailsOnAmbiguousThread(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "failed to resolve history thread: multiple threads matched 2026-04-18 (Apr 18):") {
 		t.Fatalf("stderr = %q, want ambiguous-thread error", stderr.String())
+	}
+}
+
+func TestRunScanHistoryFailsWhenResolvingBotUserForReminderScan(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+	dbPath := filepath.Join(t.TempDir(), "history.db")
+
+	originalNewDiscordSession := newDiscordSession
+	originalCurrentUser := currentUserFn
+	originalListActiveThreads := listActiveThreadsFn
+	originalListArchivedThreads := listArchivedThreadsFn
+	originalMessagesInChannel := messagesInChannelFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		currentUserFn = originalCurrentUser
+		listActiveThreadsFn = originalListActiveThreads
+		listArchivedThreadsFn = originalListArchivedThreads
+		messagesInChannelFn = originalMessagesInChannel
+	})
+
+	expectedThreadID := discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC))
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		return &discordgo.Session{}, nil
+	}
+	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
+		return nil, errors.New("boom")
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{{ID: expectedThreadID, Name: "Apr 18"}}, nil
+	}
+	listArchivedThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return nil, nil
+	}
+	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
+		return []*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18", "--db-path", dbPath}, &stdout, &stderr, time.Now)
+	if exitCode != exitRuntimeError {
+		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitRuntimeError)
+	}
+	if !strings.Contains(stderr.String(), "failed to resolve bot user for reminder scan: boom") {
+		t.Fatalf("stderr = %q, want bot-user resolution error", stderr.String())
 	}
 }
 

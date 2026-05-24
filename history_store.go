@@ -150,7 +150,7 @@ func normalizeTimestampRFC3339UTC(t *time.Time) any {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs []*discordgo.Message) ([]historySubmissionRecord, historyReminderRecord) {
+func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, botUserID string, location *time.Location, msgs []*discordgo.Message) ([]historySubmissionRecord, historyReminderRecord) {
 	earliestTrackedSubmissions := earliestCanonicalTrackedSubmissions(trackedUserIDs, msgs)
 	submissions := make([]historySubmissionRecord, 0, len(trackedUserIDs))
 	for _, userID := range trackedUserIDs {
@@ -169,7 +169,10 @@ func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs
 		submissions = append(submissions, record)
 	}
 
-	return submissions, historyReminderRecord{ThreadDate: targetDate}
+	return submissions, historyReminderRecord{
+		ThreadDate: targetDate,
+		RemindedAt: earliestValidBotReminderTimestamp(msgs, botUserID, targetDate, location),
+	}
 }
 
 type canonicalTrackedSubmission struct {
@@ -205,6 +208,35 @@ func earliestCanonicalTrackedSubmissions(trackedUserIDs []string, msgs []*discor
 				Guesses:     guesses,
 				SubmittedAt: timestamp,
 			}
+		}
+	}
+
+	return earliest
+}
+
+func earliestValidBotReminderTimestamp(msgs []*discordgo.Message, botUserID string, targetDate time.Time, location *time.Location) *time.Time {
+	if botUserID == "" || location == nil {
+		return nil
+	}
+
+	var earliest *time.Time
+	for _, msg := range msgs {
+		if msg == nil || msg.Author == nil {
+			continue
+		}
+		if msg.Author.ID != botUserID {
+			continue
+		}
+		if !isTopLevelMessage(msg) || !reminderPattern.MatchString(msg.Content) || msg.Timestamp.IsZero() {
+			continue
+		}
+		if !sameCalendarDay(msg.Timestamp, targetDate, location) {
+			continue
+		}
+
+		timestamp := msg.Timestamp
+		if earliest == nil || timestamp.Before(*earliest) {
+			earliest = &timestamp
 		}
 	}
 

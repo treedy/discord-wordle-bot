@@ -95,16 +95,17 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 	stats := computeUserStats(cfg.TrackedUserIDs, submissions, reminders)
 	reportText := formatStatsTable(reportTitle(period, targetDate, cfg.Timezone), stats)
 
-	switch outputMode {
-	case reportOutputStdout, reportOutputBoth:
+	writeStdout := outputMode == reportOutputStdout || outputMode == reportOutputBoth
+	postDiscord := outputMode == reportOutputDiscord || outputMode == reportOutputBoth
+
+	if writeStdout {
 		if _, err := io.WriteString(stdout, reportText); err != nil {
 			errorLogger.Printf("failed to write report output: %v", err)
 			return exitRuntimeError
 		}
 	}
 
-	switch outputMode {
-	case reportOutputDiscord, reportOutputBoth:
+	if postDiscord {
 		dg, err := newDiscordSession(cfg.BotToken)
 		if err != nil {
 			errorLogger.Printf("failed to create discord session: %v", err)
@@ -113,11 +114,6 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 		if _, err := sendChannelMessageFn(dg, cfg.ChannelID, reportText); err != nil {
 			errorLogger.Printf("failed to post report stats: %v", err)
 			return exitRuntimeError
-		}
-	default:
-		if outputMode != reportOutputStdout {
-			errorLogger.Printf("configuration error: unsupported report output %q", outputMode)
-			return exitConfigError
 		}
 	}
 

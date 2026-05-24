@@ -7,8 +7,8 @@ import (
 	"io"
 	"log"
 	"strings"
-	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -257,28 +257,89 @@ func adjustedScore(guesses int) int {
 }
 
 func formatStatsTable(title string, stats []userPeriodStats) string {
-	var builder strings.Builder
-	builder.WriteString(title)
-	builder.WriteString("\n")
+	headers := []string{"User", "Best", "Worst", "Avg", "Misses", "Adj. Avg", "Days Reminded"}
 
-	writer := tabwriter.NewWriter(&builder, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "User\tBest\tWorst\tAvg\tMisses\tAdj. Avg\tDays Reminded")
+	// build rows
+	rows := make([][]string, 0, len(stats))
 	for _, stat := range stats {
-		fmt.Fprintf(
-			writer,
-			"%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
+		rows = append(rows, []string{
 			stat.UserID,
 			formatOptionalInt(stat.Best),
 			formatOptionalInt(stat.Worst),
 			formatOptionalFloat(stat.Avg),
-			stat.Misses,
+			fmt.Sprintf("%d", stat.Misses),
 			formatOptionalFloat(stat.AdjustedAvg),
-			stat.DaysReminded,
-		)
+			fmt.Sprintf("%d", stat.DaysReminded),
+		})
 	}
-	_ = writer.Flush()
 
-	return builder.String()
+	// compute column widths (rune-aware)
+	colWidths := make([]int, len(headers))
+	for i, h := range headers {
+		colWidths[i] = utf8.RuneCountInString(h)
+	}
+	for _, row := range rows {
+		for j, cell := range row {
+			if w := utf8.RuneCountInString(cell); w > colWidths[j] {
+				colWidths[j] = w
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("*")
+	b.WriteString(title)
+	b.WriteString("*\n")
+
+	// helper to write separator line
+	writeSep := func() {
+		b.WriteString("+")
+		for _, w := range colWidths {
+			b.WriteString(strings.Repeat("-", w+2))
+			b.WriteString("+")
+		}
+		b.WriteString("\n")
+	}
+
+	// top separator
+	writeSep()
+
+	// header
+	b.WriteString("|")
+	for i, h := range headers {
+		b.WriteString(" ")
+		b.WriteString(h)
+		b.WriteString(strings.Repeat(" ", colWidths[i]-utf8.RuneCountInString(h)))
+		b.WriteString(" |")
+	}
+	b.WriteString("\n")
+
+	// header separator
+	writeSep()
+
+	// rows
+	for _, row := range rows {
+		b.WriteString("|")
+		for j, cell := range row {
+			b.WriteString(" ")
+			if j == 0 {
+				// left align user column
+				b.WriteString(cell)
+				b.WriteString(strings.Repeat(" ", colWidths[j]-utf8.RuneCountInString(cell)))
+			} else {
+				// right align numeric columns
+				b.WriteString(strings.Repeat(" ", colWidths[j]-utf8.RuneCountInString(cell)))
+				b.WriteString(cell)
+			}
+			b.WriteString(" |")
+		}
+		b.WriteString("\n")
+	}
+
+	// bottom separator
+	writeSep()
+
+	return b.String()
 }
 
 func formatOptionalInt(value *int) string {

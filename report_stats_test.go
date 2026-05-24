@@ -738,19 +738,43 @@ func assertReportRow(t *testing.T, report, userID string, want []string) {
 	t.Helper()
 
 	for _, line := range strings.Split(report, "\n") {
-		if !strings.HasPrefix(line, userID) {
-			continue
-		}
-		if got := strings.Fields(line); len(got) == len(want) {
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
+		// Support two table formats produced by different output modes:
+		// 1) Simple space-separated rows that start with the userID
+		// 2) Pipe-delimited ASCII table rows like "| user | ... |"
+		var got []string
+
+		// Try pipe-delimited parsing first.
+		if strings.Contains(line, "|") {
+			parts := strings.Split(line, "|")
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
 				}
+				got = append(got, p)
 			}
-			return
+			if len(got) == 0 {
+				continue
+			}
+			if got[0] != userID {
+				continue
+			}
 		} else {
+			if !strings.HasPrefix(line, userID) {
+				continue
+			}
+			got = strings.Fields(line)
+		}
+
+		if len(got) != len(want) {
 			t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
 		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
+			}
+		}
+		return
 	}
 
 	t.Fatalf("report row for %q not found in %q", userID, report)

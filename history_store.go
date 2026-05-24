@@ -29,6 +29,18 @@ type historyReminderRecord struct {
 	RemindedAt *time.Time
 }
 
+type periodSubmissionRow struct {
+	ThreadDate  string
+	UserID      string
+	Guesses     int
+	SubmittedAt *time.Time
+}
+
+type periodReminderRow struct {
+	ThreadDate string
+	RemindedAt *time.Time
+}
+
 type historyStore struct {
 	db *sql.DB
 }
@@ -137,6 +149,82 @@ reminded_at = excluded.reminded_at`,
 	}
 	committed = true
 	return nil
+}
+
+func (s *historyStore) queryPeriodStats(ctx context.Context, startDate, endDate time.Time) ([]periodSubmissionRow, []periodReminderRow, error) {
+	if s == nil || s.db == nil {
+		return nil, nil, fmt.Errorf("query period stats: nil database")
+	}
+
+	submissionRows, err := s.db.QueryContext(
+		ctx,
+		`SELECT thread_date, user_id, guesses, submitted_at
+FROM submissions
+WHERE thread_date >= ? AND thread_date < ?
+ORDER BY thread_date, user_id`,
+		normalizeThreadDate(startDate),
+		normalizeThreadDate(endDate),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query period stats: submissions: %w", err)
+	}
+	defer submissionRows.Close()
+
+	submissions := make([]periodSubmissionRow, 0)
+	for submissionRows.Next() {
+		var row periodSubmissionRow
+		var submittedAt sql.NullString
+		if err := submissionRows.Scan(&row.ThreadDate, &row.UserID, &row.Guesses, &submittedAt); err != nil {
+			return nil, nil, fmt.Errorf("query period stats: scan submission row: %w", err)
+		}
+		if submittedAt.Valid {
+			parsed, err := time.Parse(time.RFC3339, submittedAt.String)
+			if err != nil {
+				return nil, nil, fmt.Errorf("query period stats: parse submission timestamp for %q on %s: %w", row.UserID, row.ThreadDate, err)
+			}
+			row.SubmittedAt = &parsed
+		}
+		submissions = append(submissions, row)
+	}
+	if err := submissionRows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("query period stats: iterate submission rows: %w", err)
+	}
+
+	reminderRows, err := s.db.QueryContext(
+		ctx,
+		`SELECT thread_date, reminded_at
+FROM reminders
+WHERE thread_date >= ? AND thread_date < ?
+ORDER BY thread_date`,
+		normalizeThreadDate(startDate),
+		normalizeThreadDate(endDate),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("query period stats: reminders: %w", err)
+	}
+	defer reminderRows.Close()
+
+	reminders := make([]periodReminderRow, 0)
+	for reminderRows.Next() {
+		var row periodReminderRow
+		var remindedAt sql.NullString
+		if err := reminderRows.Scan(&row.ThreadDate, &remindedAt); err != nil {
+			return nil, nil, fmt.Errorf("query period stats: scan reminder row: %w", err)
+		}
+		if remindedAt.Valid {
+			parsed, err := time.Parse(time.RFC3339, remindedAt.String)
+			if err != nil {
+				return nil, nil, fmt.Errorf("query period stats: parse reminder timestamp for %s: %w", row.ThreadDate, err)
+			}
+			row.RemindedAt = &parsed
+		}
+		reminders = append(reminders, row)
+	}
+	if err := reminderRows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("query period stats: iterate reminder rows: %w", err)
+	}
+
+	return submissions, reminders, nil
 }
 
 func normalizeThreadDate(t time.Time) string {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -11,6 +13,8 @@ import (
 )
 
 const defaultHistoryDBPath = "wordle_history.db"
+
+var historySubmissionScorePattern = regexp.MustCompile(`^\s*(?i:(?:Wordle|Scoredle))\s*[0-9,]*\s*([1-6]|X)/6\*?\s*$`)
 
 type historySubmissionRecord struct {
 	ThreadDate  time.Time
@@ -147,7 +151,7 @@ func normalizeTimestampRFC3339UTC(t *time.Time) any {
 }
 
 func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs []*discordgo.Message) ([]historySubmissionRecord, historyReminderRecord) {
-	earliestTrackedSubmissions := earliestQualifyingTrackedSubmissions(trackedUserIDs, msgs)
+	earliestTrackedSubmissions := earliestCanonicalTrackedSubmissions(trackedUserIDs, msgs)
 	submissions := make([]historySubmissionRecord, 0, len(trackedUserIDs))
 	for _, userID := range trackedUserIDs {
 		record := historySubmissionRecord{
@@ -156,9 +160,10 @@ func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs
 			Guesses:    -1,
 			Source:     "tracked-missing",
 		}
-		if submittedAt, ok := earliestTrackedSubmissions[userID]; ok {
-			timestamp := submittedAt
+		if submission, ok := earliestTrackedSubmissions[userID]; ok {
+			timestamp := submission.SubmittedAt
 			record.SubmittedAt = &timestamp
+			record.Guesses = submission.Guesses
 			record.Source = "tracked-submission"
 		}
 		submissions = append(submissions, record)
@@ -167,13 +172,18 @@ func buildScanHistoryRecords(targetDate time.Time, trackedUserIDs []string, msgs
 	return submissions, historyReminderRecord{ThreadDate: targetDate}
 }
 
-func earliestQualifyingTrackedSubmissions(trackedUserIDs []string, msgs []*discordgo.Message) map[string]time.Time {
+type canonicalTrackedSubmission struct {
+	Guesses     int
+	SubmittedAt time.Time
+}
+
+func earliestCanonicalTrackedSubmissions(trackedUserIDs []string, msgs []*discordgo.Message) map[string]canonicalTrackedSubmission {
 	tracked := make(map[string]struct{}, len(trackedUserIDs))
 	for _, userID := range trackedUserIDs {
 		tracked[userID] = struct{}{}
 	}
 
-	earliest := make(map[string]time.Time, len(trackedUserIDs))
+	earliest := make(map[string]canonicalTrackedSubmission, len(trackedUserIDs))
 	for _, msg := range msgs {
 		if !isQualifyingSubmission(msg) {
 			continue
@@ -181,15 +191,50 @@ func earliestQualifyingTrackedSubmissions(trackedUserIDs []string, msgs []*disco
 		if _, ok := tracked[msg.Author.ID]; !ok {
 			continue
 		}
+		guesses, ok := parseSubmissionGuessesFromFirstLine(msg.Content)
+		if !ok {
+			continue
+		}
 
 		timestamp := msg.Timestamp
 		if timestamp.IsZero() {
 			continue
 		}
-		if existing, ok := earliest[msg.Author.ID]; !ok || timestamp.Before(existing) {
-			earliest[msg.Author.ID] = timestamp
+		if existing, ok := earliest[msg.Author.ID]; !ok || timestamp.Before(existing.SubmittedAt) {
+			earliest[msg.Author.ID] = canonicalTrackedSubmission{
+				Guesses:     guesses,
+				SubmittedAt: timestamp,
+			}
 		}
 	}
 
 	return earliest
+}
+
+func parseSubmissionGuessesFromFirstLine(content string) (int, bool) {
+	firstLine, _, _ := strings.Cut(content, "\n")
+	firstLine = strings.TrimSuffix(firstLine, "\r")
+
+	matches := historySubmissionScorePattern.FindStringSubmatch(firstLine)
+	if len(matches) != 2 {
+		return 0, false
+	}
+	switch matches[1] {
+	case "X":
+		return 7, true
+	case "1":
+		return 1, true
+	case "2":
+		return 2, true
+	case "3":
+		return 3, true
+	case "4":
+		return 4, true
+	case "5":
+		return 5, true
+	case "6":
+		return 6, true
+	default:
+		return 0, false
+	}
 }

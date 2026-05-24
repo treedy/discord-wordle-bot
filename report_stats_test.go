@@ -155,8 +155,8 @@ func TestRunReportStatsDailyOutputsTrackedUsersInConfigOrder(t *testing.T) {
 	}
 
 	nextDate := targetDate.AddDate(0, 0, 1)
-	nextReminderAt := remindedAt.Add(24 * time.Hour)
-	nextSolvedAt := solvedAt.Add(24 * time.Hour)
+	nextReminderAt := time.Date(2026, time.April, 19, 15, 0, 0, 0, time.UTC)
+	nextSolvedAt := time.Date(2026, time.April, 19, 16, 0, 0, 0, time.UTC)
 	if err := store.writeScanHistory(context.Background(), []historySubmissionRecord{
 		{
 			ThreadDate:  nextDate,

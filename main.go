@@ -470,7 +470,7 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	reportPeriod := reportCmd.String("period", "", "reporting period")
 	reportDate := reportCmd.String("date", "", "target date in YYYY-MM-DD")
 	reportDBPath := reportCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
-	reportOutput := reportCmd.String("output", reportOutputStdout, "report output destination")
+	reportOutput := reportCmd.String("output", reportOutputBoth, "report output destination")
 
 	switch cmd {
 	case "help", "-h", "--help":

@@ -101,6 +101,29 @@ func TestRunCLIRejectsUnrecognizedPeriodForReportStats(t *testing.T) {
 	}
 }
 
+func TestRunCLIRejectsUnrecognizedOutputForReportStats(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{"discord-wordle-bot", reportStatsCommand, "--config", configPath, "--period", "daily", "--date", "2026-04-18", "--output", "email"}, &stdout, &stderr, time.Now)
+	if exitCode != exitConfigError {
+		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitConfigError)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), `configuration error: invalid --output "email": supported values: stdout, discord, both`) {
+		t.Fatalf("stderr = %q, want invalid-output error", stderr.String())
+	}
+}
+
 func TestReportPeriodBounds(t *testing.T) {
 	location, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -287,6 +310,193 @@ func TestRunReportStatsDailyOutputsTrackedUsersInConfigOrder(t *testing.T) {
 	if strings.Contains(report, "3.00") {
 		t.Fatalf("stdout = %q, want next-day data excluded from daily report", report)
 	}
+}
+
+func TestRunReportStatsDiscordOutputPostsToParentChannel(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+	dbPath := filepath.Join(t.TempDir(), "history.db")
+
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	targetDate := mustParseReportStatsDate(t, "2026-04-18", location)
+
+	store, err := openHistoryStore(dbPath)
+	if err != nil {
+		t.Fatalf("openHistoryStore() error = %v", err)
+	}
+	defer store.Close()
+
+	submittedAt := time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC)
+	if err := store.writeScanHistory(context.Background(), []historySubmissionRecord{
+		{
+			ThreadDate:  targetDate,
+			UserID:      "234567890123456789",
+			Guesses:     4,
+			SubmittedAt: &submittedAt,
+			Source:      "tracked-submission",
+		},
+	}, historyReminderRecord{ThreadDate: targetDate}); err != nil {
+		t.Fatalf("writeScanHistory() error = %v", err)
+	}
+
+	originalNewDiscordSession := newDiscordSession
+	originalSendChannelMessage := sendChannelMessageFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		sendChannelMessageFn = originalSendChannelMessage
+	})
+
+	session := &discordgo.Session{}
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		if botToken != "secret-token" {
+			t.Fatalf("newDiscordSession() botToken = %q, want %q", botToken, "secret-token")
+		}
+		return session, nil
+	}
+
+	sendCalls := 0
+	var gotChannelID string
+	var gotContent string
+	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
+		sendCalls++
+		if s != session {
+			t.Fatalf("sendChannelMessageFn() session = %p, want %p", s, session)
+		}
+		gotChannelID = channelID
+		gotContent = content
+		return &discordgo.Message{ID: "report-message-id"}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{
+		"discord-wordle-bot",
+		reportStatsCommand,
+		"--config", configPath,
+		"--period", "daily",
+		"--date", "2026-04-18",
+		"--db-path", dbPath,
+		"--output", "discord",
+	}, &stdout, &stderr, time.Now)
+	if exitCode != exitSuccess {
+		t.Fatalf("runCLI() exitCode = %d, want %d (stderr=%q)", exitCode, exitSuccess, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if sendCalls != 1 {
+		t.Fatalf("sendChannelMessageFn() calls = %d, want 1", sendCalls)
+	}
+	if gotChannelID != "123456789012345678" {
+		t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", gotChannelID, "123456789012345678")
+	}
+	if !strings.Contains(gotContent, "Daily report for 2026-04-18 (America/New_York)") {
+		t.Fatalf("discord content = %q, want daily report title", gotContent)
+	}
+	assertReportRow(t, gotContent, "234567890123456789", []string{"234567890123456789", "4", "4", "4.00", "0", "4.00", "0"})
+}
+
+func TestRunReportStatsDefaultOutputWritesStdoutAndDiscord(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+	dbPath := filepath.Join(t.TempDir(), "history.db")
+
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	targetDate := mustParseReportStatsDate(t, "2026-04-18", location)
+
+	store, err := openHistoryStore(dbPath)
+	if err != nil {
+		t.Fatalf("openHistoryStore() error = %v", err)
+	}
+	defer store.Close()
+
+	submittedAt := time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC)
+	if err := store.writeScanHistory(context.Background(), []historySubmissionRecord{
+		{
+			ThreadDate:  targetDate,
+			UserID:      "234567890123456789",
+			Guesses:     5,
+			SubmittedAt: &submittedAt,
+			Source:      "tracked-submission",
+		},
+	}, historyReminderRecord{ThreadDate: targetDate}); err != nil {
+		t.Fatalf("writeScanHistory() error = %v", err)
+	}
+
+	originalNewDiscordSession := newDiscordSession
+	originalSendChannelMessage := sendChannelMessageFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		sendChannelMessageFn = originalSendChannelMessage
+	})
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		return &discordgo.Session{}, nil
+	}
+
+	sendCalls := 0
+	var gotContent string
+	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
+		sendCalls++
+		if channelID != "123456789012345678" {
+			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "123456789012345678")
+		}
+		gotContent = content
+		return &discordgo.Message{ID: "report-message-id"}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{
+		"discord-wordle-bot",
+		reportStatsCommand,
+		"--config", configPath,
+		"--period", "daily",
+		"--date", "2026-04-18",
+		"--db-path", dbPath,
+	}, &stdout, &stderr, time.Now)
+	if exitCode != exitSuccess {
+		t.Fatalf("runCLI() exitCode = %d, want %d (stderr=%q)", exitCode, exitSuccess, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if sendCalls != 1 {
+		t.Fatalf("sendChannelMessageFn() calls = %d, want 1", sendCalls)
+	}
+	if gotContent == "" {
+		t.Fatal("discord content = empty, want report")
+	}
+
+	report := stdout.String()
+	if report == "" {
+		t.Fatal("stdout = empty, want report")
+	}
+	if report != gotContent {
+		t.Fatalf("stdout = %q, want same content posted to discord %q", report, gotContent)
+	}
+	assertReportRow(t, report, "234567890123456789", []string{"234567890123456789", "5", "5", "5.00", "0", "5.00", "0"})
 }
 
 func TestRunReportStatsPeriodUsesContainingCalendarRange(t *testing.T) {
@@ -528,32 +738,56 @@ func assertReportRow(t *testing.T, report, userID string, want []string) {
 	t.Helper()
 
 	for _, line := range strings.Split(report, "\n") {
-		if !strings.HasPrefix(line, userID) {
-			continue
-		}
-		if got := strings.Fields(line); len(got) == len(want) {
-			for i := range want {
-				if got[i] != want[i] {
-					t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
+		// Support two table formats produced by different output modes:
+		// 1) Simple space-separated rows that start with the userID
+		// 2) Pipe-delimited ASCII table rows like "| user | ... |"
+		var got []string
+
+		// Try pipe-delimited parsing first.
+		if strings.Contains(line, "|") {
+			parts := strings.Split(line, "|")
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
 				}
+				got = append(got, p)
 			}
-			return
+			if len(got) == 0 {
+				continue
+			}
+			if got[0] != userID {
+				continue
+			}
 		} else {
+			if !strings.HasPrefix(line, userID) {
+				continue
+			}
+			got = strings.Fields(line)
+		}
+
+		if len(got) != len(want) {
 			t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
 		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("report row %q fields = %v, want %v", userID, got, want)
+			}
+		}
+		return
 	}
 
 	t.Fatalf("report row for %q not found in %q", userID, report)
 }
 
 type wantUserPeriodStats struct {
-	UserID        string
-	Best          string
-	Worst         string
-	Avg           string
-	Misses        int
-	AdjustedAvg   string
-	DaysReminded  int
+	UserID       string
+	Best         string
+	Worst        string
+	Avg          string
+	Misses       int
+	AdjustedAvg  string
+	DaysReminded int
 }
 
 func assertComputedUserStats(t *testing.T, got []userPeriodStats, want []wantUserPeriodStats) {

@@ -785,6 +785,7 @@ func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T
   "tracked_user_ids": ["234567890123456789"],
   "timezone": "America/New_York"
 }`)
+	dbPath := filepath.Join(t.TempDir(), "history.db")
 
 	originalNewDiscordSession := newDiscordSession
 	originalListActiveThreads := listActiveThreadsFn
@@ -824,7 +825,7 @@ func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18", "--db-path", dbPath}, &stdout, &stderr, time.Now)
 	if exitCode != exitSuccess {
 		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitSuccess)
 	}
@@ -849,6 +850,7 @@ func TestRunScanHistoryFailsOnAmbiguousThread(t *testing.T) {
   "tracked_user_ids": ["234567890123456789"],
   "timezone": "America/New_York"
 }`)
+	dbPath := filepath.Join(t.TempDir(), "history.db")
 
 	originalNewDiscordSession := newDiscordSession
 	originalListActiveThreads := listActiveThreadsFn
@@ -885,7 +887,7 @@ func TestRunScanHistoryFailsOnAmbiguousThread(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18", "--db-path", dbPath}, &stdout, &stderr, time.Now)
 	if exitCode != exitRuntimeError {
 		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitRuntimeError)
 	}

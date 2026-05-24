@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -460,6 +461,7 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	scanCmd.SetOutput(stderr)
 	scanCfg := scanCmd.String("config", configFilePath, configFilePathDesc)
 	scanDate := scanCmd.String("date", "", "target date in YYYY-MM-DD")
+	scanDBPath := scanCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
 
 	switch cmd {
 	case "help", "-h", "--help":
@@ -479,7 +481,7 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		if err := scanCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runScanHistory(*scanCfg, *scanDate, stdout, stderr)
+		return runScanHistory(*scanCfg, *scanDate, *scanDBPath, stdout, stderr)
 	default:
 		usage(stderr, programName)
 		return exitConfigError
@@ -606,7 +608,7 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 	return exitSuccess
 }
 
-func runScanHistory(cfgPath, dateValue string, stdout, stderr io.Writer) int {
+func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer) int {
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
@@ -623,13 +625,20 @@ func runScanHistory(cfgPath, dateValue string, stdout, stderr io.Writer) int {
 	}
 
 	targetTitle := threadTitle(targetDate)
-	infoLogger.Printf("starting scan-history for target_date=%s timezone=%s", targetTitle, cfg.Timezone)
+	infoLogger.Printf("starting scan-history for target_date=%s timezone=%s db_path=%s", targetTitle, cfg.Timezone, dbPath)
 
 	dg, err := newDiscordSession(cfg.BotToken)
 	if err != nil {
 		errorLogger.Printf("failed to create discord session: %v", err)
 		return exitRuntimeError
 	}
+
+	store, err := openHistoryStore(dbPath)
+	if err != nil {
+		errorLogger.Printf("failed to open history store: %v", err)
+		return exitRuntimeError
+	}
+	defer store.Close()
 
 	match, err := resolveHistoryThread(dg, cfg.ChannelID, targetDate, cfg.Location)
 	if err != nil {
@@ -646,5 +655,12 @@ func runScanHistory(cfgPath, dateValue string, stdout, stderr io.Writer) int {
 
 	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
 	infoLogger.Printf("scanned history complete=%v missing=%v", complete, missing)
+
+	submissions, reminder := buildScanHistoryRecords(targetDate, cfg.TrackedUserIDs, msgs)
+	if err := store.writeScanHistory(context.Background(), submissions, reminder); err != nil {
+		errorLogger.Printf("failed to persist scan history: %v", err)
+		return exitRuntimeError
+	}
+	infoLogger.Printf("persisted scan history submissions=%d reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
 	return exitSuccess
 }

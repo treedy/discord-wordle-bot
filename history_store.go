@@ -14,7 +14,7 @@ import (
 
 const defaultHistoryDBPath = "wordle_history.db"
 
-var historySubmissionScorePattern = regexp.MustCompile(`^\s*(?i:(?:Wordle|Scoredle))\b.*\b([1-6]|X)/6\*?\s*$`)
+var historySubmissionScorePattern = regexp.MustCompile(`^\s*(?i:(?:Wordle|Scoredle))\s+[0-9][0-9,]*\s+([1-6]|X)/6\*?\s*$`)
 
 type historySubmissionRecord struct {
 	ThreadDate  time.Time

@@ -41,6 +41,11 @@ func TestParseSubmissionGuessesFromFirstLine(t *testing.T) {
 			wantOK:  false,
 		},
 		{
+			name:    "rejects noncanonical text before score",
+			content: "Wordle some random text 4/6",
+			wantOK:  false,
+		},
+		{
 			name:    "rejects trailing content after token",
 			content: "Wordle 123 4/6 extra",
 			wantOK:  false,

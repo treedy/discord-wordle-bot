@@ -25,6 +25,12 @@ Send reminders for missing users in today's thread:
 ./discord-wordle-bot send-reminders --config config.json
 ```
 
+Scan a specific day's thread history:
+
+```bash
+./discord-wordle-bot scan-history --config config.json --date 2026-04-18
+```
+
 Show help and usage:
 
 ```bash
@@ -44,6 +50,7 @@ Run the container (mount your local `config.json` over the container config) and
 ```bash
 docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot create-thread --config /app/config.json
 docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot send-reminders --config /app/config.json
+docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot scan-history --config /app/config.json --date 2026-04-18
 ```
 
 The CLI exits with status `0` when it completes normally (including when there is nothing to post), `2` for configuration errors, and `1` for Discord/API runtime failures. It logs the resolved thread date and action taken so cron output is operationally useful.

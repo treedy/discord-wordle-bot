@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -267,6 +268,95 @@ func TestCurrentDayUsesConfiguredLocation(t *testing.T) {
 				t.Fatalf("currentDay() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseScanDate(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		value   string
+		want    string
+		wantErr string
+	}{
+		{
+			name:  "parses strict yyyy mm dd in configured timezone",
+			value: "2026-04-18",
+			want:  "2026-04-18 00:00 EDT",
+		},
+		{
+			name:    "requires value",
+			value:   "",
+			wantErr: "--date is required",
+		},
+		{
+			name:    "rejects non strict format",
+			value:   "2026/04/18",
+			wantErr: `invalid --date "2026/04/18": must use YYYY-MM-DD`,
+		},
+		{
+			name:    "rejects impossible calendar date",
+			value:   "2026-02-30",
+			wantErr: `invalid --date "2026-02-30": must be a real calendar date in YYYY-MM-DD`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseScanDate(tt.value, location)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatal("parseScanDate() error = nil, want non-nil")
+				}
+				if err.Error() != tt.wantErr {
+					t.Fatalf("parseScanDate() error = %q, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseScanDate() error = %v", err)
+			}
+			if got.Format("2006-01-02 15:04 MST") != tt.want {
+				t.Fatalf("parseScanDate() = %q, want %q", got.Format("2006-01-02 15:04 MST"), tt.want)
+			}
+		})
+	}
+}
+
+func TestHistoryThreadMatchesUsesTitleAndCreationDay(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	targetDate, err := parseScanDate("2026-04-18", location)
+	if err != nil {
+		t.Fatalf("parseScanDate() error = %v", err)
+	}
+
+	matches, err := historyThreadMatches("archived", []*discordgo.Channel{
+		{ID: discordSnowflakeID(time.Date(2025, time.April, 18, 16, 0, 0, 0, time.UTC)), Name: "Apr 18"},
+		{ID: discordSnowflakeID(time.Date(2026, time.April, 19, 5, 0, 0, 0, time.UTC)), Name: "Apr 18"},
+		{ID: discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC)), Name: "Apr 18"},
+		{ID: discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC)), Name: "Apr 19"},
+	}, targetDate, location)
+	if err != nil {
+		t.Fatalf("historyThreadMatches() error = %v", err)
+	}
+
+	if len(matches) != 1 {
+		t.Fatalf("historyThreadMatches() len = %d, want 1", len(matches))
+	}
+	if matches[0].source != "archived" {
+		t.Fatalf("historyThreadMatches() source = %q, want %q", matches[0].source, "archived")
+	}
+	wantID := discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC))
+	if matches[0].thread.ID != wantID {
+		t.Fatalf("historyThreadMatches() thread ID = %q, want %q", matches[0].thread.ID, wantID)
 	}
 }
 
@@ -665,6 +755,145 @@ func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
 	}
 }
 
+func TestRunCLIRequiresDateForScanHistory(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath}, &stdout, &stderr, time.Now)
+	if exitCode != exitConfigError {
+		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitConfigError)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "configuration error: --date is required") {
+		t.Fatalf("stderr = %q, want missing-date error", stderr.String())
+	}
+}
+
+func TestRunScanHistoryUsesConfiguredTimezoneAndFindsArchivedThread(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	originalNewDiscordSession := newDiscordSession
+	originalListActiveThreads := listActiveThreadsFn
+	originalListArchivedThreads := listArchivedThreadsFn
+	originalMessagesInChannel := messagesInChannelFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		listActiveThreadsFn = originalListActiveThreads
+		listArchivedThreadsFn = originalListArchivedThreads
+		messagesInChannelFn = originalMessagesInChannel
+	})
+
+	expectedThreadID := discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC))
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		return &discordgo.Session{}, nil
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{
+			{ID: discordSnowflakeID(time.Date(2025, time.April, 18, 16, 0, 0, 0, time.UTC)), Name: "Apr 18"},
+		}, nil
+	}
+	listArchivedThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{
+			{ID: expectedThreadID, Name: "Apr 18"},
+		}, nil
+	}
+	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
+		if channelID != expectedThreadID {
+			t.Fatalf("messagesInChannelFn() channelID = %q, want %q", channelID, expectedThreadID)
+		}
+		return []*discordgo.Message{
+			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
+		}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
+	if exitCode != exitSuccess {
+		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitSuccess)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "starting scan-history for target_date=Apr 18 timezone=America/New_York") {
+		t.Fatalf("stdout = %q, want scan-history start log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `found archived history thread name="Apr 18" id=`+expectedThreadID) {
+		t.Fatalf("stdout = %q, want archived thread log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "scanned history complete=[234567890123456789] missing=[]") {
+		t.Fatalf("stdout = %q, want scan summary log", stdout.String())
+	}
+}
+
+func TestRunScanHistoryFailsOnAmbiguousThread(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	originalNewDiscordSession := newDiscordSession
+	originalListActiveThreads := listActiveThreadsFn
+	originalListArchivedThreads := listArchivedThreadsFn
+	originalMessagesInChannel := messagesInChannelFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		listActiveThreadsFn = originalListActiveThreads
+		listArchivedThreadsFn = originalListArchivedThreads
+		messagesInChannelFn = originalMessagesInChannel
+	})
+
+	firstID := discordSnowflakeID(time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC))
+	secondID := strconv.FormatInt(mustParseInt64(t, firstID)+1, 10)
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		return &discordgo.Session{}, nil
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{
+			{ID: firstID, Name: "Apr 18"},
+		}, nil
+	}
+	listArchivedThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		return []*discordgo.Channel{
+			{ID: secondID, Name: "Apr 18"},
+		}, nil
+	}
+	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
+		t.Fatal("messagesInChannelFn() should not be called when thread resolution is ambiguous")
+		return nil, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := runCLI([]string{"discord-wordle-bot", scanHistoryCommand, "--config", configPath, "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
+	if exitCode != exitRuntimeError {
+		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitRuntimeError)
+	}
+	if !strings.Contains(stderr.String(), "failed to resolve history thread: multiple threads matched 2026-04-18 (Apr 18):") {
+		t.Fatalf("stderr = %q, want ambiguous-thread error", stderr.String())
+	}
+}
+
 func TestCompletionStatusUsesOnlyQualifyingTopLevelMessages(t *testing.T) {
 	complete, missing := completionStatus(
 		[]string{"234567890123456789", "345678901234567890", "456789012345678901"},
@@ -957,4 +1186,19 @@ func writeTempConfig(t *testing.T, content string) string {
 	}
 
 	return configPath
+}
+
+func discordSnowflakeID(createdAt time.Time) string {
+	const discordEpochMillis = int64(1420070400000)
+	return strconv.FormatInt((createdAt.UnixMilli()-discordEpochMillis)<<22, 10)
+}
+
+func mustParseInt64(t *testing.T, value string) int64 {
+	t.Helper()
+
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		t.Fatalf("ParseInt() error = %v", err)
+	}
+	return parsed
 }

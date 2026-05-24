@@ -89,15 +89,84 @@ func TestRunCLIRejectsUnrecognizedPeriodForReportStats(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	exitCode := runCLI([]string{"discord-wordle-bot", reportStatsCommand, "--config", configPath, "--period", "monthly", "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
+	exitCode := runCLI([]string{"discord-wordle-bot", reportStatsCommand, "--config", configPath, "--period", "quarterly", "--date", "2026-04-18"}, &stdout, &stderr, time.Now)
 	if exitCode != exitConfigError {
 		t.Fatalf("runCLI() exitCode = %d, want %d", exitCode, exitConfigError)
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), `configuration error: invalid --period "monthly": supported values: daily`) {
+	if !strings.Contains(stderr.String(), `configuration error: invalid --period "quarterly": supported values: daily, weekly, monthly, yearly`) {
 		t.Fatalf("stderr = %q, want invalid-period error", stderr.String())
+	}
+}
+
+func TestReportPeriodBounds(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		period    string
+		date      string
+		wantStart string
+		wantEnd   string
+	}{
+		{
+			name:      "daily",
+			period:    reportPeriodDaily,
+			date:      "2026-04-18",
+			wantStart: "2026-04-18",
+			wantEnd:   "2026-04-19",
+		},
+		{
+			name:      "weekly",
+			period:    reportPeriodWeekly,
+			date:      "2026-04-15",
+			wantStart: "2026-04-12",
+			wantEnd:   "2026-04-19",
+		},
+		{
+			name:      "monthly",
+			period:    reportPeriodMonthly,
+			date:      "2026-04-18",
+			wantStart: "2026-04-01",
+			wantEnd:   "2026-05-01",
+		},
+		{
+			name:      "yearly",
+			period:    reportPeriodYearly,
+			date:      "2026-08-10",
+			wantStart: "2026-01-01",
+			wantEnd:   "2027-01-01",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetDate := mustParseReportStatsDate(t, tt.date, location)
+			wantStart := mustParseReportStatsDate(t, tt.wantStart, location)
+			wantEnd := mustParseReportStatsDate(t, tt.wantEnd, location)
+
+			gotStart, gotEnd, err := reportPeriodBounds(tt.period, targetDate)
+			if err != nil {
+				t.Fatalf("reportPeriodBounds() error = %v", err)
+			}
+			if !gotStart.Equal(wantStart) {
+				t.Fatalf("reportPeriodBounds() start = %s, want %s", gotStart, wantStart)
+			}
+			if !gotEnd.Equal(wantEnd) {
+				t.Fatalf("reportPeriodBounds() end = %s, want %s", gotEnd, wantEnd)
+			}
+			if gotStart.Location().String() != location.String() {
+				t.Fatalf("reportPeriodBounds() start location = %q, want %q", gotStart.Location(), location)
+			}
+			if gotEnd.Location().String() != location.String() {
+				t.Fatalf("reportPeriodBounds() end location = %q, want %q", gotEnd.Location(), location)
+			}
+		})
 	}
 }
 
@@ -218,6 +287,143 @@ func TestRunReportStatsDailyOutputsTrackedUsersInConfigOrder(t *testing.T) {
 	if strings.Contains(report, "3.00") {
 		t.Fatalf("stdout = %q, want next-day data excluded from daily report", report)
 	}
+}
+
+func TestRunReportStatsPeriodUsesContainingCalendarRange(t *testing.T) {
+	const trackedUserID = "234567890123456789"
+
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		period        string
+		date          string
+		title         string
+		dayGuesses    map[string]int
+		wantRowFields []string
+	}{
+		{
+			name:   "weekly",
+			period: reportPeriodWeekly,
+			date:   "2026-04-15",
+			title:  "Weekly report for 2026-04-15 (America/New_York)",
+			dayGuesses: map[string]int{
+				"2026-04-11": 1,
+				"2026-04-12": 2,
+				"2026-04-18": 6,
+				"2026-04-19": 5,
+			},
+			wantRowFields: []string{trackedUserID, "2", "6", "4.00", "0", "4.00", "0"},
+		},
+		{
+			name:   "monthly",
+			period: reportPeriodMonthly,
+			date:   "2026-04-18",
+			title:  "Monthly report for 2026-04-18 (America/New_York)",
+			dayGuesses: map[string]int{
+				"2026-03-31": 1,
+				"2026-04-01": 2,
+				"2026-04-30": 6,
+				"2026-05-01": 5,
+			},
+			wantRowFields: []string{trackedUserID, "2", "6", "4.00", "0", "4.00", "0"},
+		},
+		{
+			name:   "yearly",
+			period: reportPeriodYearly,
+			date:   "2026-08-10",
+			title:  "Yearly report for 2026-08-10 (America/New_York)",
+			dayGuesses: map[string]int{
+				"2025-12-31": 1,
+				"2026-01-01": 2,
+				"2026-12-31": 6,
+				"2027-01-01": 5,
+			},
+			wantRowFields: []string{trackedUserID, "2", "6", "4.00", "0", "4.00", "0"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "history.db")
+
+			store, err := openHistoryStore(dbPath)
+			if err != nil {
+				t.Fatalf("openHistoryStore() error = %v", err)
+			}
+			defer store.Close()
+
+			for day, guesses := range tt.dayGuesses {
+				targetDate := mustParseReportStatsDate(t, day, location)
+				submittedAt := time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 16, 0, 0, 0, time.UTC)
+				if err := store.writeScanHistory(context.Background(), []historySubmissionRecord{
+					{
+						ThreadDate:  targetDate,
+						UserID:      trackedUserID,
+						Guesses:     guesses,
+						SubmittedAt: &submittedAt,
+						Source:      "tracked-submission",
+					},
+				}, historyReminderRecord{ThreadDate: targetDate}); err != nil {
+					t.Fatalf("writeScanHistory(%s) error = %v", day, err)
+				}
+			}
+
+			originalSendChannelMessage := sendChannelMessageFn
+			t.Cleanup(func() {
+				sendChannelMessageFn = originalSendChannelMessage
+			})
+			sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
+				t.Fatal("sendChannelMessageFn() should not be called for --output stdout")
+				return nil, nil
+			}
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			exitCode := runCLI([]string{
+				"discord-wordle-bot",
+				reportStatsCommand,
+				"--config", configPath,
+				"--period", tt.period,
+				"--date", tt.date,
+				"--db-path", dbPath,
+				"--output", "stdout",
+			}, &stdout, &stderr, time.Now)
+			if exitCode != exitSuccess {
+				t.Fatalf("runCLI() exitCode = %d, want %d (stderr=%q)", exitCode, exitSuccess, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+
+			report := stdout.String()
+			if !strings.Contains(report, tt.title) {
+				t.Fatalf("stdout = %q, want title %q", report, tt.title)
+			}
+			assertReportRow(t, report, trackedUserID, tt.wantRowFields)
+		})
+	}
+}
+
+func mustParseReportStatsDate(t *testing.T, value string, location *time.Location) time.Time {
+	t.Helper()
+
+	targetDate, err := parseScanDate(value, location)
+	if err != nil {
+		t.Fatalf("parseScanDate(%q) error = %v", value, err)
+	}
+	return targetDate
 }
 
 func assertReportRow(t *testing.T, report, userID string, want []string) {

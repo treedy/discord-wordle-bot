@@ -25,10 +25,11 @@ Send reminders for missing users in today's thread:
 ./discord-wordle-bot send-reminders --config config.json
 ```
 
-Scan a specific day's thread history:
+Scan a specific day's thread history and persist results into SQLite (`wordle_history.db` by default):
 
 ```bash
 ./discord-wordle-bot scan-history --config config.json --date 2026-04-18
+./discord-wordle-bot scan-history --config config.json --date 2026-04-18 --db-path /data/wordle_history.db
 ```
 
 Show help and usage:

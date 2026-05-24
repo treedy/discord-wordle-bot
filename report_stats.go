@@ -12,9 +12,19 @@ import (
 )
 
 const (
-	reportPeriodDaily  = "daily"
-	reportOutputStdout = "stdout"
+	reportPeriodDaily   = "daily"
+	reportPeriodWeekly  = "weekly"
+	reportPeriodMonthly = "monthly"
+	reportPeriodYearly  = "yearly"
+	reportOutputStdout  = "stdout"
 )
+
+var supportedReportPeriods = []string{
+	reportPeriodDaily,
+	reportPeriodWeekly,
+	reportPeriodMonthly,
+	reportPeriodYearly,
+}
 
 type userPeriodStats struct {
 	UserID        string
@@ -75,7 +85,7 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 	}
 
 	stats := computeUserStats(cfg.TrackedUserIDs, submissions, reminders)
-	reportText := formatStatsTable(fmt.Sprintf("Daily report for %s (%s)", targetDate.Format(scanDateLayout), cfg.Timezone), stats)
+	reportText := formatStatsTable(reportTitle(period, targetDate, cfg.Timezone), stats)
 
 	switch outputMode {
 	case reportOutputStdout:
@@ -96,10 +106,12 @@ func parseReportPeriod(value string) (string, error) {
 	if value == "" {
 		return "", errors.New("--period is required")
 	}
-	if value != reportPeriodDaily {
-		return "", fmt.Errorf("invalid --period %q: supported values: daily", value)
+	switch value {
+	case reportPeriodDaily, reportPeriodWeekly, reportPeriodMonthly, reportPeriodYearly:
+		return value, nil
+	default:
+		return "", fmt.Errorf("invalid --period %q: supported values: %s", value, strings.Join(supportedReportPeriods, ", "))
 	}
-	return value, nil
 }
 
 func parseReportOutput(value string) (string, error) {
@@ -114,11 +126,37 @@ func parseReportOutput(value string) (string, error) {
 }
 
 func reportPeriodBounds(period string, targetDate time.Time) (time.Time, time.Time, error) {
+	targetDate = time.Date(targetDate.Year(), targetDate.Month(), targetDate.Day(), 0, 0, 0, 0, targetDate.Location())
+
 	switch period {
 	case reportPeriodDaily:
 		return targetDate, targetDate.AddDate(0, 0, 1), nil
+	case reportPeriodWeekly:
+		startDate := targetDate.AddDate(0, 0, -int(targetDate.Weekday()))
+		return startDate, startDate.AddDate(0, 0, 7), nil
+	case reportPeriodMonthly:
+		startDate := time.Date(targetDate.Year(), targetDate.Month(), 1, 0, 0, 0, 0, targetDate.Location())
+		return startDate, startDate.AddDate(0, 1, 0), nil
+	case reportPeriodYearly:
+		startDate := time.Date(targetDate.Year(), time.January, 1, 0, 0, 0, 0, targetDate.Location())
+		return startDate, startDate.AddDate(1, 0, 0), nil
 	default:
-		return time.Time{}, time.Time{}, fmt.Errorf("invalid --period %q: supported values: daily", period)
+		return time.Time{}, time.Time{}, fmt.Errorf("invalid --period %q: supported values: %s", period, strings.Join(supportedReportPeriods, ", "))
+	}
+}
+
+func reportTitle(period string, targetDate time.Time, timezone string) string {
+	switch period {
+	case reportPeriodDaily:
+		return fmt.Sprintf("Daily report for %s (%s)", targetDate.Format(scanDateLayout), timezone)
+	case reportPeriodWeekly:
+		return fmt.Sprintf("Weekly report for %s (%s)", targetDate.Format(scanDateLayout), timezone)
+	case reportPeriodMonthly:
+		return fmt.Sprintf("Monthly report for %s (%s)", targetDate.Format(scanDateLayout), timezone)
+	case reportPeriodYearly:
+		return fmt.Sprintf("Yearly report for %s (%s)", targetDate.Format(scanDateLayout), timezone)
+	default:
+		return fmt.Sprintf("Report for %s (%s)", targetDate.Format(scanDateLayout), timezone)
 	}
 }
 

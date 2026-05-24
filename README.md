@@ -40,6 +40,14 @@ Generate a stats report from stored history. By default `report-stats` writes to
 ./discord-wordle-bot report-stats --config config.json --period monthly --date 2026-04-18 --output discord
 ```
 
+**Note** about `--date`: the `--date` value (required, format `YYYY-MM-DD`) selects the reference date for the report and is interpreted in the `timezone` configured in `config.json`.
+- `--period daily`: report covers the single calendar day specified by `--date`.
+- `--period weekly`: report covers the week containing `--date`, starting on Sunday and ending the following Sunday (start inclusive, end exclusive).
+- `--period monthly`: report covers the calendar month containing `--date` (from the 1st to the 1st of the next month).
+- `--period yearly`: report covers the calendar year containing `--date`.
+
+The report title shows the provided `--date` as the reference date for the period.
+
 Show help and usage:
 
 ```bash

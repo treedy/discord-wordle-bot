@@ -416,6 +416,104 @@ func TestRunReportStatsPeriodUsesContainingCalendarRange(t *testing.T) {
 	}
 }
 
+func TestComputeUserStats(t *testing.T) {
+	reminderAt := time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC)
+	beforeReminder := reminderAt.Add(-time.Hour)
+	afterReminder := reminderAt.Add(time.Hour)
+	nextReminderAt := reminderAt.AddDate(0, 0, 1)
+	nextAfterReminder := nextReminderAt.Add(time.Hour)
+
+	tests := []struct {
+		name           string
+		trackedUserIDs []string
+		submissions    []periodSubmissionRow
+		reminders      []periodReminderRow
+		want           []wantUserPeriodStats
+	}{
+		{
+			name:           "solves only",
+			trackedUserIDs: []string{"user-b", "user-a"},
+			submissions: []periodSubmissionRow{
+				{ThreadDate: "2026-04-18", UserID: "user-a", Guesses: 5, SubmittedAt: &beforeReminder},
+				{ThreadDate: "2026-04-19", UserID: "user-a", Guesses: 1, SubmittedAt: &nextAfterReminder},
+				{ThreadDate: "2026-04-20", UserID: "user-a", Guesses: 3},
+			},
+			reminders: []periodReminderRow{
+				{ThreadDate: "2026-04-18", RemindedAt: &reminderAt},
+				{ThreadDate: "2026-04-19", RemindedAt: &nextReminderAt},
+			},
+			want: []wantUserPeriodStats{
+				{UserID: "user-b", Best: "—", Worst: "—", Avg: "—", Misses: 0, AdjustedAvg: "—", DaysReminded: 0},
+				{UserID: "user-a", Best: "1", Worst: "5", Avg: "3.00", Misses: 0, AdjustedAvg: "3.00", DaysReminded: 1},
+			},
+		},
+		{
+			name:           "misses only",
+			trackedUserIDs: []string{"user-a"},
+			submissions: []periodSubmissionRow{
+				{ThreadDate: "2026-04-18", UserID: "user-a", Guesses: 7, SubmittedAt: &afterReminder},
+				{ThreadDate: "2026-04-19", UserID: "user-a", Guesses: 7},
+			},
+			reminders: []periodReminderRow{
+				{ThreadDate: "2026-04-18", RemindedAt: &reminderAt},
+				{ThreadDate: "2026-04-19", RemindedAt: &nextReminderAt},
+			},
+			want: []wantUserPeriodStats{
+				{UserID: "user-a", Best: "—", Worst: "—", Avg: "—", Misses: 2, AdjustedAvg: "7.00", DaysReminded: 1},
+			},
+		},
+		{
+			name:           "no entries only",
+			trackedUserIDs: []string{"user-a"},
+			submissions: []periodSubmissionRow{
+				{ThreadDate: "2026-04-18", UserID: "user-a", Guesses: -1},
+				{ThreadDate: "2026-04-19", UserID: "user-a", Guesses: -1},
+			},
+			reminders: []periodReminderRow{
+				{ThreadDate: "2026-04-18", RemindedAt: &reminderAt},
+				{ThreadDate: "2026-04-19", RemindedAt: &nextReminderAt},
+			},
+			want: []wantUserPeriodStats{
+				{UserID: "user-a", Best: "—", Worst: "—", Avg: "—", Misses: 0, AdjustedAvg: "7.00", DaysReminded: 0},
+			},
+		},
+		{
+			name:           "mixed scores and reminders",
+			trackedUserIDs: []string{"user-a", "user-b"},
+			submissions: []periodSubmissionRow{
+				{ThreadDate: "2026-04-18", UserID: "user-a", Guesses: 2, SubmittedAt: &afterReminder},
+				{ThreadDate: "2026-04-19", UserID: "user-a", Guesses: 7, SubmittedAt: &beforeReminder},
+				{ThreadDate: "2026-04-20", UserID: "user-a", Guesses: -1},
+				{ThreadDate: "2026-04-21", UserID: "user-a", Guesses: 6, SubmittedAt: &nextAfterReminder},
+				{ThreadDate: "2026-04-18", UserID: "ignored-user", Guesses: 1, SubmittedAt: &afterReminder},
+			},
+			reminders: []periodReminderRow{
+				{ThreadDate: "2026-04-18", RemindedAt: &reminderAt},
+				{ThreadDate: "2026-04-19", RemindedAt: &nextReminderAt},
+				{ThreadDate: "2026-04-21"},
+			},
+			want: []wantUserPeriodStats{
+				{UserID: "user-a", Best: "2", Worst: "6", Avg: "4.00", Misses: 1, AdjustedAvg: "5.50", DaysReminded: 1},
+				{UserID: "user-b", Best: "—", Worst: "—", Avg: "—", Misses: 0, AdjustedAvg: "—", DaysReminded: 0},
+			},
+		},
+		{
+			name:           "zero period rows",
+			trackedUserIDs: []string{"user-a"},
+			want: []wantUserPeriodStats{
+				{UserID: "user-a", Best: "—", Worst: "—", Avg: "—", Misses: 0, AdjustedAvg: "—", DaysReminded: 0},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeUserStats(tt.trackedUserIDs, tt.submissions, tt.reminders)
+			assertComputedUserStats(t, got, tt.want)
+		})
+	}
+}
+
 func mustParseReportStatsDate(t *testing.T, value string, location *time.Location) time.Time {
 	t.Helper()
 
@@ -446,4 +544,46 @@ func assertReportRow(t *testing.T, report, userID string, want []string) {
 	}
 
 	t.Fatalf("report row for %q not found in %q", userID, report)
+}
+
+type wantUserPeriodStats struct {
+	UserID        string
+	Best          string
+	Worst         string
+	Avg           string
+	Misses        int
+	AdjustedAvg   string
+	DaysReminded  int
+}
+
+func assertComputedUserStats(t *testing.T, got []userPeriodStats, want []wantUserPeriodStats) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("computeUserStats() len = %d, want %d", len(got), len(want))
+	}
+
+	for i := range want {
+		if got[i].UserID != want[i].UserID {
+			t.Fatalf("computeUserStats()[%d].UserID = %q, want %q", i, got[i].UserID, want[i].UserID)
+		}
+		if gotBest := formatOptionalInt(got[i].Best); gotBest != want[i].Best {
+			t.Fatalf("computeUserStats()[%d].Best = %q, want %q", i, gotBest, want[i].Best)
+		}
+		if gotWorst := formatOptionalInt(got[i].Worst); gotWorst != want[i].Worst {
+			t.Fatalf("computeUserStats()[%d].Worst = %q, want %q", i, gotWorst, want[i].Worst)
+		}
+		if gotAvg := formatOptionalFloat(got[i].Avg); gotAvg != want[i].Avg {
+			t.Fatalf("computeUserStats()[%d].Avg = %q, want %q", i, gotAvg, want[i].Avg)
+		}
+		if got[i].Misses != want[i].Misses {
+			t.Fatalf("computeUserStats()[%d].Misses = %d, want %d", i, got[i].Misses, want[i].Misses)
+		}
+		if gotAdjustedAvg := formatOptionalFloat(got[i].AdjustedAvg); gotAdjustedAvg != want[i].AdjustedAvg {
+			t.Fatalf("computeUserStats()[%d].AdjustedAvg = %q, want %q", i, gotAdjustedAvg, want[i].AdjustedAvg)
+		}
+		if got[i].DaysReminded != want[i].DaysReminded {
+			t.Fatalf("computeUserStats()[%d].DaysReminded = %d, want %d", i, got[i].DaysReminded, want[i].DaysReminded)
+		}
+	}
 }

@@ -32,6 +32,14 @@ Scan a specific day's thread history and persist results into SQLite (`wordle_hi
 ./discord-wordle-bot scan-history --config config.json --date 2026-04-18 --db-path /data/wordle_history.db
 ```
 
+Generate a stats report from stored history. By default `report-stats` writes to stdout and posts to the configured parent Discord channel; use `--output stdout`, `--output discord`, or `--output both` to choose destinations:
+
+```bash
+./discord-wordle-bot report-stats --config config.json --period daily --date 2026-04-18
+./discord-wordle-bot report-stats --config config.json --period weekly --date 2026-04-18 --output stdout
+./discord-wordle-bot report-stats --config config.json --period monthly --date 2026-04-18 --output discord
+```
+
 Show help and usage:
 
 ```bash
@@ -52,6 +60,7 @@ Run the container (mount your local `config.json` over the container config) and
 docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot create-thread --config /app/config.json
 docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot send-reminders --config /app/config.json
 docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot scan-history --config /app/config.json --date 2026-04-18
+docker run --rm -v "$PWD/config.json":/app/config.json discord-wordle-bot report-stats --config /app/config.json --period daily --date 2026-04-18
 ```
 
 The CLI exits with status `0` when it completes normally (including when there is nothing to post), `2` for configuration errors, and `1` for Discord/API runtime failures. It logs the resolved thread date and action taken so cron output is operationally useful.

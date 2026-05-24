@@ -17,6 +17,8 @@ const (
 	reportPeriodMonthly = "monthly"
 	reportPeriodYearly  = "yearly"
 	reportOutputStdout  = "stdout"
+	reportOutputDiscord = "discord"
+	reportOutputBoth    = "both"
 )
 
 var supportedReportPeriods = []string{
@@ -24,6 +26,12 @@ var supportedReportPeriods = []string{
 	reportPeriodWeekly,
 	reportPeriodMonthly,
 	reportPeriodYearly,
+}
+
+var supportedReportOutputs = []string{
+	reportOutputStdout,
+	reportOutputDiscord,
+	reportOutputBoth,
 }
 
 type userPeriodStats struct {
@@ -88,14 +96,29 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 	reportText := formatStatsTable(reportTitle(period, targetDate, cfg.Timezone), stats)
 
 	switch outputMode {
-	case reportOutputStdout:
+	case reportOutputStdout, reportOutputBoth:
 		if _, err := io.WriteString(stdout, reportText); err != nil {
 			errorLogger.Printf("failed to write report output: %v", err)
 			return exitRuntimeError
 		}
+	}
+
+	switch outputMode {
+	case reportOutputDiscord, reportOutputBoth:
+		dg, err := newDiscordSession(cfg.BotToken)
+		if err != nil {
+			errorLogger.Printf("failed to create discord session: %v", err)
+			return exitRuntimeError
+		}
+		if _, err := sendChannelMessageFn(dg, cfg.ChannelID, reportText); err != nil {
+			errorLogger.Printf("failed to post report stats: %v", err)
+			return exitRuntimeError
+		}
 	default:
-		errorLogger.Printf("configuration error: unsupported report output %q", outputMode)
-		return exitConfigError
+		if outputMode != reportOutputStdout {
+			errorLogger.Printf("configuration error: unsupported report output %q", outputMode)
+			return exitConfigError
+		}
 	}
 
 	return exitSuccess
@@ -117,12 +140,14 @@ func parseReportPeriod(value string) (string, error) {
 func parseReportOutput(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return reportOutputStdout, nil
+		return reportOutputBoth, nil
 	}
-	if value != reportOutputStdout {
-		return "", fmt.Errorf("invalid --output %q: supported values: stdout", value)
+	switch value {
+	case reportOutputStdout, reportOutputDiscord, reportOutputBoth:
+		return value, nil
+	default:
+		return "", fmt.Errorf("invalid --output %q: supported values: %s", value, strings.Join(supportedReportOutputs, ", "))
 	}
-	return value, nil
 }
 
 func reportPeriodBounds(period string, targetDate time.Time) (time.Time, time.Time, error) {

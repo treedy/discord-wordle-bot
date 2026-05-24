@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,20 +33,26 @@ const (
 
 	createThreadCommand  = "create-thread"
 	sendRemindersCommand = "send-reminders"
+	scanHistoryCommand   = "scan-history"
+
+	scanDateLayout          = "2006-01-02"
+	archivedThreadsPageSize = 100
 )
 
 var (
 	discordIDPattern  = regexp.MustCompile(`^\d+$`)
 	submissionPattern = regexp.MustCompile(`(?i)^\s*(Wordle|Scoredle)`)
 	reminderPattern   = regexp.MustCompile(`(?i)^\s*Reminder:`)
+	scanDatePattern   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return discordgo.New("Bot " + botToken)
 	}
 	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
 		return s.User("@me")
 	}
-	listActiveThreadsFn = listActiveThreads
-	createThreadFn      = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
+	listActiveThreadsFn   = listActiveThreads
+	listArchivedThreadsFn = listArchivedThreads
+	createThreadFn        = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
 		return s.ThreadStart(channelID, name, discordgo.ChannelTypeGuildPublicThread, 1440)
 	}
 	messagesInChannelFn  = messagesInChannel
@@ -163,6 +170,47 @@ func listActiveThreads(s *discordgo.Session, channelID string) ([]*discordgo.Cha
 	return threads.Threads, nil
 }
 
+func listArchivedThreads(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+	var all []*discordgo.Channel
+	var before *time.Time
+
+	for {
+		threads, err := s.ThreadsArchived(channelID, before, archivedThreadsPageSize)
+		if err != nil {
+			return nil, err
+		}
+		if threads == nil || len(threads.Threads) == 0 {
+			return all, nil
+		}
+
+		all = append(all, threads.Threads...)
+		if !threads.HasMore {
+			return all, nil
+		}
+
+		nextBefore, ok := archivedThreadsBefore(threads.Threads)
+		if !ok {
+			return nil, errors.New("cannot paginate archived threads without archive timestamps")
+		}
+		before = &nextBefore
+	}
+}
+
+func archivedThreadsBefore(threads []*discordgo.Channel) (time.Time, bool) {
+	var oldest time.Time
+	found := false
+	for _, thread := range threads {
+		if thread == nil || thread.ThreadMetadata == nil || thread.ThreadMetadata.ArchiveTimestamp.IsZero() {
+			continue
+		}
+		if !found || thread.ThreadMetadata.ArchiveTimestamp.Before(oldest) {
+			oldest = thread.ThreadMetadata.ArchiveTimestamp
+			found = true
+		}
+	}
+	return oldest, found
+}
+
 func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string) {
 	want := threadTitle(t)
 	for _, th := range threads {
@@ -175,6 +223,22 @@ func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string)
 
 func threadTitle(t time.Time) string {
 	return t.Format("Jan 2")
+}
+
+func parseScanDate(value string, location *time.Location) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, errors.New("--date is required")
+	}
+	if !scanDatePattern.MatchString(value) {
+		return time.Time{}, fmt.Errorf("invalid --date %q: must use YYYY-MM-DD", value)
+	}
+
+	targetDate, err := time.ParseInLocation(scanDateLayout, value, location)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid --date %q: must be a real calendar date in YYYY-MM-DD", value)
+	}
+	return targetDate, nil
 }
 
 func messagesInChannel(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
@@ -297,48 +361,138 @@ func createDailyThread(s *discordgo.Session, channelID, threadName, starterPromp
 	return threadChannel, nil
 }
 
-func main() {
-	// Provide simple subcommands: create-thread, send-reminders
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(exitConfigError)
+type historyThreadMatch struct {
+	thread  *discordgo.Channel
+	source  string
+	created time.Time
+}
+
+func historyThreadMatches(source string, threads []*discordgo.Channel, target time.Time, location *time.Location) ([]historyThreadMatch, error) {
+	wantTitle := threadTitle(target)
+	matches := make([]historyThreadMatch, 0)
+
+	for _, thread := range threads {
+		if thread == nil || thread.Name != wantTitle {
+			continue
+		}
+
+		createdAt, err := discordgo.SnowflakeTimestamp(thread.ID)
+		if err != nil {
+			return nil, fmt.Errorf("resolve creation time for thread %q (%s): %w", thread.Name, thread.ID, err)
+		}
+		if !sameCalendarDay(createdAt, target, location) {
+			continue
+		}
+
+		matches = append(matches, historyThreadMatch{
+			thread:  thread,
+			source:  source,
+			created: createdAt,
+		})
 	}
 
-	cmd := os.Args[1]
+	return matches, nil
+}
+
+func resolveHistoryThread(s *discordgo.Session, channelID string, target time.Time, location *time.Location) (*historyThreadMatch, error) {
+	activeThreads, err := listActiveThreadsFn(s, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("list active threads: %w", err)
+	}
+	activeMatches, err := historyThreadMatches("active", activeThreads, target, location)
+	if err != nil {
+		return nil, err
+	}
+
+	archivedThreads, err := listArchivedThreadsFn(s, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("list archived threads: %w", err)
+	}
+	archivedMatches, err := historyThreadMatches("archived", archivedThreads, target, location)
+	if err != nil {
+		return nil, err
+	}
+
+	matches := append(activeMatches, archivedMatches...)
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no thread found for %s (%s)", target.Format(scanDateLayout), threadTitle(target))
+	case 1:
+		return &matches[0], nil
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, match := range matches {
+			ids = append(ids, match.thread.ID)
+		}
+		sort.Strings(ids)
+		return nil, fmt.Errorf("multiple threads matched %s (%s): %s", target.Format(scanDateLayout), threadTitle(target), strings.Join(ids, ", "))
+	}
+}
+
+func main() {
+	os.Exit(runCLI(os.Args, os.Stdout, os.Stderr, time.Now))
+}
+
+func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
+	programName := "discord-wordle-bot"
+	if len(args) > 0 && args[0] != "" {
+		programName = args[0]
+	}
+	if len(args) < 2 {
+		usage(stderr, programName)
+		return exitConfigError
+	}
+
+	cmd := args[1]
 
 	const configFilePath = "config.json"
 	configFilePathDesc := fmt.Sprintf("path to %s", configFilePath)
 
-	createCmd := flag.NewFlagSet(createThreadCommand, flag.ExitOnError)
+	createCmd := flag.NewFlagSet(createThreadCommand, flag.ContinueOnError)
+	createCmd.SetOutput(stderr)
 	createCfg := createCmd.String("config", configFilePath, configFilePathDesc)
 
-	sendCmd := flag.NewFlagSet(sendRemindersCommand, flag.ExitOnError)
+	sendCmd := flag.NewFlagSet(sendRemindersCommand, flag.ContinueOnError)
+	sendCmd.SetOutput(stderr)
 	sendCfg := sendCmd.String("config", configFilePath, configFilePathDesc)
+
+	scanCmd := flag.NewFlagSet(scanHistoryCommand, flag.ContinueOnError)
+	scanCmd.SetOutput(stderr)
+	scanCfg := scanCmd.String("config", configFilePath, configFilePathDesc)
+	scanDate := scanCmd.String("date", "", "target date in YYYY-MM-DD")
 
 	switch cmd {
 	case "help", "-h", "--help":
-		usage()
-		os.Exit(exitSuccess)
+		usage(stdout, programName)
+		return exitSuccess
 	case createThreadCommand:
-		createCmd.Parse(os.Args[2:])
-		os.Exit(runMode(*createCfg, os.Stdout, os.Stderr, time.Now, createThreadCommand))
+		if err := createCmd.Parse(args[2:]); err != nil {
+			return exitConfigError
+		}
+		return runMode(*createCfg, stdout, stderr, now, createThreadCommand)
 	case sendRemindersCommand:
-		sendCmd.Parse(os.Args[2:])
-		os.Exit(runMode(*sendCfg, os.Stdout, os.Stderr, time.Now, sendRemindersCommand))
+		if err := sendCmd.Parse(args[2:]); err != nil {
+			return exitConfigError
+		}
+		return runMode(*sendCfg, stdout, stderr, now, sendRemindersCommand)
+	case scanHistoryCommand:
+		if err := scanCmd.Parse(args[2:]); err != nil {
+			return exitConfigError
+		}
+		return runScanHistory(*scanCfg, *scanDate, stdout, stderr)
 	default:
-		usage()
-		os.Exit(exitConfigError)
+		usage(stderr, programName)
+		return exitConfigError
 	}
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <command> [options]\n\n", os.Args[0])
-	fmt.Fprintln(os.Stderr, "Commands:")
-	fmt.Fprintf(os.Stderr, "  %s  Create today's thread if it doesn't exist\n", createThreadCommand)
-	fmt.Fprintf(os.Stderr, "  %s  Send reminders for missing users in today's thread\n", sendRemindersCommand)
-	fmt.Fprintln(os.Stderr, "  help            Show this help message")
-	fmt.Fprintln(os.Stderr, "\nGlobal options:")
-	flag.PrintDefaults()
+func usage(w io.Writer, programName string) {
+	fmt.Fprintf(w, "Usage: %s <command> [options]\n\n", programName)
+	fmt.Fprintln(w, "Commands:")
+	fmt.Fprintf(w, "  %s  Create today's thread if it doesn't exist\n", createThreadCommand)
+	fmt.Fprintf(w, "  %s  Send reminders for missing users in today's thread\n", sendRemindersCommand)
+	fmt.Fprintf(w, "  %s  Scan a specific day's thread history\n", scanHistoryCommand)
+	fmt.Fprintln(w, "  help            Show this help message")
 }
 
 func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
@@ -449,5 +603,48 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 		return exitRuntimeError
 	}
 	infoLogger.Printf("posted reminder for missing=%v", missing)
+	return exitSuccess
+}
+
+func runScanHistory(cfgPath, dateValue string, stdout, stderr io.Writer) int {
+	infoLogger := log.New(stdout, "", log.LstdFlags)
+	errorLogger := log.New(stderr, "", log.LstdFlags)
+
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		errorLogger.Printf("configuration error: %v", err)
+		return exitConfigError
+	}
+
+	targetDate, err := parseScanDate(dateValue, cfg.Location)
+	if err != nil {
+		errorLogger.Printf("configuration error: %v", err)
+		return exitConfigError
+	}
+
+	targetTitle := threadTitle(targetDate)
+	infoLogger.Printf("starting scan-history for target_date=%s timezone=%s", targetTitle, cfg.Timezone)
+
+	dg, err := newDiscordSession(cfg.BotToken)
+	if err != nil {
+		errorLogger.Printf("failed to create discord session: %v", err)
+		return exitRuntimeError
+	}
+
+	match, err := resolveHistoryThread(dg, cfg.ChannelID, targetDate, cfg.Location)
+	if err != nil {
+		errorLogger.Printf("failed to resolve history thread: %v", err)
+		return exitRuntimeError
+	}
+	infoLogger.Printf("found %s history thread name=%q id=%s", match.source, match.thread.Name, match.thread.ID)
+
+	msgs, err := messagesInChannelFn(dg, match.thread.ID)
+	if err != nil {
+		errorLogger.Printf("failed to fetch messages in thread: %v", err)
+		return exitRuntimeError
+	}
+
+	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
+	infoLogger.Printf("scanned history complete=%v missing=%v", complete, missing)
 	return exitSuccess
 }

@@ -649,18 +649,25 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 
 	msgs, err := messagesInChannelFn(dg, match.thread.ID)
 	if err != nil {
-		errorLogger.Printf("failed to fetch messages in thread: %v", err)
+		errorLogger.Printf("failed to fetch messages in history thread id=%s: %v", match.thread.ID, err)
 		return exitRuntimeError
 	}
 
 	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
-	infoLogger.Printf("scanned history complete=%v missing=%v", complete, missing)
+	infoLogger.Printf("scan-history message summary complete=%v missing=%v", complete, missing)
 
-	submissions, reminder := buildScanHistoryRecords(targetDate, cfg.TrackedUserIDs, msgs)
-	if err := store.writeScanHistory(context.Background(), submissions, reminder); err != nil {
-		errorLogger.Printf("failed to persist scan history: %v", err)
+	currentUser, err := currentUserFn(dg)
+	if err != nil {
+		errorLogger.Printf("failed to resolve bot user for reminder scan: %v", err)
 		return exitRuntimeError
 	}
-	infoLogger.Printf("persisted scan history submissions=%d reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
+
+	submissions, reminder := buildScanHistoryRecords(targetDate, cfg.TrackedUserIDs, currentUser.ID, cfg.Location, msgs)
+	if err := store.writeScanHistory(context.Background(), submissions, reminder); err != nil {
+		errorLogger.Printf("failed to persist scan history for thread id=%s: %v", match.thread.ID, err)
+		return exitRuntimeError
+	}
+	infoLogger.Printf("persisted scan history submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
+	infoLogger.Printf("scan-history summary target_date=%s thread_source=%s thread_id=%s complete_count=%d missing_count=%d submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", targetDate.Format(scanDateLayout), match.source, match.thread.ID, len(complete), len(missing), len(submissions), reminder.RemindedAt != nil)
 	return exitSuccess
 }

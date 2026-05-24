@@ -95,10 +95,16 @@ func TestEarliestCanonicalTrackedSubmissionsUsesEarliestParseableTrackedTimestam
 func TestBuildScanHistoryRecordsUsesTrackedSubmissionAndMissRows(t *testing.T) {
 	targetDate := time.Date(2026, time.April, 18, 0, 0, 0, 0, time.FixedZone("EDT", -4*60*60))
 	submittedAt := time.Date(2026, time.April, 18, 8, 15, 0, 0, time.FixedZone("EDT", -4*60*60))
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
 
 	submissions, reminder := buildScanHistoryRecords(
 		targetDate,
 		[]string{"234567890123456789", "345678901234567890"},
+		"bot-user-id",
+		location,
 		[]*discordgo.Message{
 			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6", Timestamp: submittedAt},
 		},
@@ -115,6 +121,38 @@ func TestBuildScanHistoryRecordsUsesTrackedSubmissionAndMissRows(t *testing.T) {
 	}
 	if !reminder.ThreadDate.Equal(targetDate) || reminder.RemindedAt != nil {
 		t.Fatalf("reminder = %+v, want target date and nil reminded_at", reminder)
+	}
+}
+
+func TestEarliestValidBotReminderTimestampIgnoresNoiseAndUsesEarliestTargetDateReminder(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+
+	targetDate := time.Date(2026, time.April, 18, 0, 0, 0, 0, location)
+	want := time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC)
+
+	got := earliestValidBotReminderTimestamp([]*discordgo.Message{
+		nil,
+		{Author: &discordgo.User{ID: "other-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle.", Timestamp: want.Add(-time.Hour)},
+		{Author: &discordgo.User{ID: "bot-user-id"}, Content: "hello", Timestamp: want.Add(-30 * time.Minute)},
+		{Author: &discordgo.User{ID: "bot-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle.", Timestamp: time.Date(2026, time.April, 18, 3, 0, 0, 0, time.UTC)},
+		{
+			Author:           &discordgo.User{ID: "bot-user-id"},
+			Content:          "Reminder: <@1> still needs to post today's Wordle or Scoredle.",
+			MessageReference: &discordgo.MessageReference{MessageID: "parent-message-id"},
+			Timestamp:        want.Add(-15 * time.Minute),
+		},
+		{Author: &discordgo.User{ID: "bot-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle.", Timestamp: want.Add(2 * time.Hour)},
+		{Author: &discordgo.User{ID: "bot-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle.", Timestamp: want},
+		{Author: &discordgo.User{ID: "bot-user-id"}, Content: "Reminder: <@1> still needs to post today's Wordle or Scoredle."},
+	}, "bot-user-id", targetDate, location)
+	if got == nil {
+		t.Fatal("earliestValidBotReminderTimestamp() = nil, want non-nil")
+	}
+	if !got.Equal(want) {
+		t.Fatalf("earliestValidBotReminderTimestamp() = %v, want %v", *got, want)
 	}
 }
 
@@ -244,11 +282,13 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "history.db")
 
 	originalNewDiscordSession := newDiscordSession
+	originalCurrentUser := currentUserFn
 	originalListActiveThreads := listActiveThreadsFn
 	originalListArchivedThreads := listArchivedThreadsFn
 	originalMessagesInChannel := messagesInChannelFn
 	t.Cleanup(func() {
 		newDiscordSession = originalNewDiscordSession
+		currentUserFn = originalCurrentUser
 		listActiveThreadsFn = originalListActiveThreads
 		listArchivedThreadsFn = originalListArchivedThreads
 		messagesInChannelFn = originalMessagesInChannel
@@ -260,6 +300,9 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
 		return &discordgo.Session{}, nil
 	}
+	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
+		return &discordgo.User{ID: "bot-user-id"}, nil
+	}
 	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
 		return nil, nil
 	}
@@ -270,11 +313,23 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 		if channelID != expectedThreadID {
 			t.Fatalf("messagesInChannelFn() channelID = %q, want %q", channelID, expectedThreadID)
 		}
-		return []*discordgo.Message{{
-			Author:    &discordgo.User{ID: "234567890123456789"},
-			Content:   "Wordle 123 4/6",
-			Timestamp: submittedAt,
-		}}, nil
+		return []*discordgo.Message{
+			{
+				Author:    &discordgo.User{ID: "bot-user-id"},
+				Content:   "Reminder: <@345678901234567890> still needs to post today's Wordle or Scoredle.",
+				Timestamp: time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC),
+			},
+			{
+				Author:    &discordgo.User{ID: "234567890123456789"},
+				Content:   "Wordle 123 4/6",
+				Timestamp: submittedAt,
+			},
+			{
+				Author:    &discordgo.User{ID: "bot-user-id"},
+				Content:   "Reminder: <@345678901234567890> still needs to post today's Wordle or Scoredle.",
+				Timestamp: time.Date(2026, time.April, 18, 17, 0, 0, 0, time.UTC),
+			},
+		}, nil
 	}
 
 	var stdout bytes.Buffer
@@ -289,7 +344,7 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
 	}
-	if !bytes.Contains(stdout.Bytes(), []byte("persisted scan history submissions=2 reminder_timestamp_present=false")) {
+	if !bytes.Contains(stdout.Bytes(), []byte("persisted scan history submission_rows=2 reminder_rows=1 reminder_timestamp_present=true")) {
 		t.Fatalf("stdout = %q, want persistence summary log", stdout.String())
 	}
 
@@ -350,7 +405,10 @@ func TestRunScanHistoryPersistsTrackedRowsToSQLite(t *testing.T) {
 	if reminderCount != 1 {
 		t.Fatalf("reminder row count = %d, want %d", reminderCount, 1)
 	}
-	if remindedAt.Valid {
-		t.Fatalf("reminded_at valid = %v, want false", remindedAt.Valid)
+	if !remindedAt.Valid {
+		t.Fatalf("reminded_at valid = %v, want true", remindedAt.Valid)
+	}
+	if remindedAt.String != time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC).Format(time.RFC3339) {
+		t.Fatalf("reminded_at = %q, want %q", remindedAt.String, time.Date(2026, time.April, 18, 15, 0, 0, 0, time.UTC).Format(time.RFC3339))
 	}
 }

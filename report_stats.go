@@ -85,15 +85,30 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 		return exitRuntimeError
 	}
 	defer store.Close()
-
 	submissions, reminders, err := store.queryPeriodStats(context.Background(), startDate, endDate)
 	if err != nil {
 		errorLogger.Printf("failed to query report stats: %v", err)
 		return exitRuntimeError
 	}
 
-	stats := computeUserStats(cfg.TrackedUserIDs, submissions, reminders)
-	reportText := formatStatsTable(reportTitle(period, targetDate, cfg.Timezone), stats)
+	// load tracked users from DB (fall back to config if empty)
+	users, err := store.listUsers(context.Background())
+	if err != nil {
+		errorLogger.Printf("failed to load users from DB: %v", err)
+		return exitRuntimeError
+	}
+	trackedIDs := make([]string, 0, len(users))
+	displayNames := make(map[string]string, len(users))
+	for _, u := range users {
+		trackedIDs = append(trackedIDs, u.UserID)
+		displayNames[u.UserID] = u.DisplayName
+	}
+	if len(trackedIDs) == 0 {
+		trackedIDs = cfg.TrackedUserIDs
+	}
+
+	stats := computeUserStats(trackedIDs, submissions, reminders)
+	reportText := formatStatsTable(reportTitle(period, targetDate, cfg.Timezone), stats, displayNames)
 
 	writeStdout := outputMode == reportOutputStdout || outputMode == reportOutputBoth
 	postDiscord := outputMode == reportOutputDiscord || outputMode == reportOutputBoth
@@ -256,14 +271,18 @@ func adjustedScore(guesses int) int {
 	}
 }
 
-func formatStatsTable(title string, stats []userPeriodStats) string {
+func formatStatsTable(title string, stats []userPeriodStats, displayNames map[string]string) string {
 	headers := []string{"User", "Best", "Worst", "Avg", "Misses", "Adj. Avg", "Days Reminded"}
 
 	// build rows
 	rows := make([][]string, 0, len(stats))
 	for _, stat := range stats {
+		userDisplay := stat.UserID
+		if dn, ok := displayNames[stat.UserID]; ok && dn != "" {
+			userDisplay = dn
+		}
 		rows = append(rows, []string{
-			stat.UserID,
+			userDisplay,
 			formatOptionalInt(stat.Best),
 			formatOptionalInt(stat.Worst),
 			formatOptionalFloat(stat.Avg),
@@ -289,7 +308,7 @@ func formatStatsTable(title string, stats []userPeriodStats) string {
 	var b strings.Builder
 	b.WriteString("*")
 	b.WriteString(title)
-	b.WriteString("*\n")
+	b.WriteString("*\n```\n")
 
 	// helper to write separator line
 	writeSep := func() {
@@ -338,6 +357,7 @@ func formatStatsTable(title string, stats []userPeriodStats) string {
 
 	// bottom separator
 	writeSep()
+	b.WriteString("```\n")
 
 	return b.String()
 }

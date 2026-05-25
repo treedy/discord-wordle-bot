@@ -119,22 +119,23 @@ func validateConfig(c *Config) error {
 	if !discordIDPattern.MatchString(c.ChannelID) {
 		return fmt.Errorf("channel_id must be a Discord snowflake")
 	}
-	if len(c.TrackedUserIDs) == 0 {
-		return errors.New("tracked_user_ids must contain at least one user ID")
-	}
-
-	normalizedUserIDs := make([]string, 0, len(c.TrackedUserIDs))
-	for i, id := range c.TrackedUserIDs {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return fmt.Errorf("tracked_user_ids[%d] is required", i)
+	// tracked_user_ids is now optional; tracked users are loaded from the
+	// database Users table for runtime operations. If present, validate and
+	// normalize but do not require it.
+	if len(c.TrackedUserIDs) > 0 {
+		normalizedUserIDs := make([]string, 0, len(c.TrackedUserIDs))
+		for i, id := range c.TrackedUserIDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				return fmt.Errorf("tracked_user_ids[%d] is required", i)
+			}
+			if !discordIDPattern.MatchString(id) {
+				return fmt.Errorf("tracked_user_ids[%d] must be a Discord snowflake", i)
+			}
+			normalizedUserIDs = append(normalizedUserIDs, id)
 		}
-		if !discordIDPattern.MatchString(id) {
-			return fmt.Errorf("tracked_user_ids[%d] must be a Discord snowflake", i)
-		}
-		normalizedUserIDs = append(normalizedUserIDs, id)
+		c.TrackedUserIDs = normalizedUserIDs
 	}
-	c.TrackedUserIDs = normalizedUserIDs
 
 	if c.StarterPrompt == "" {
 		c.StarterPrompt = defaultStarterPrompt
@@ -454,6 +455,13 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	createCmd.SetOutput(stderr)
 	createCfg := createCmd.String("config", configFilePath, configFilePathDesc)
 
+	addUserCmd := flag.NewFlagSet("add-user", flag.ContinueOnError)
+	addUserCmd.SetOutput(stderr)
+	addUserCfg := addUserCmd.String("config", configFilePath, configFilePathDesc)
+	addUserID := addUserCmd.String("id", "", "discord user id to add")
+	addUserName := addUserCmd.String("name", "", "display name for the user")
+	addUserDBPath := addUserCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
+
 	sendCmd := flag.NewFlagSet(sendRemindersCommand, flag.ContinueOnError)
 	sendCmd.SetOutput(stderr)
 	sendCfg := sendCmd.String("config", configFilePath, configFilePathDesc)
@@ -491,6 +499,11 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 			return exitConfigError
 		}
 		return runScanHistory(*scanCfg, *scanDate, *scanDBPath, stdout, stderr)
+	case "add-user":
+		if err := addUserCmd.Parse(args[2:]); err != nil {
+			return exitConfigError
+		}
+		return runAddUser(*addUserCfg, *addUserID, *addUserName, *addUserDBPath, stdout, stderr)
 	case reportStatsCommand:
 		if err := reportCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
@@ -508,6 +521,7 @@ func usage(w io.Writer, programName string) {
 	fmt.Fprintf(w, "  %s  Create today's thread if it doesn't exist\n", createThreadCommand)
 	fmt.Fprintf(w, "  %s  Send reminders for missing users in today's thread\n", sendRemindersCommand)
 	fmt.Fprintf(w, "  %s  Scan a specific day's thread history\n", scanHistoryCommand)
+	fmt.Fprintf(w, "  %s  Add a tracked user to the database (flags: --id, --name, --db-path)\n", "add-user")
 	fmt.Fprintf(w, "  %s  Print a statistics report from stored history\n", reportStatsCommand)
 	fmt.Fprintln(w, "  help            Show this help message")
 }
@@ -595,7 +609,27 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 		return exitRuntimeError
 	}
 
-	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
+	// load tracked users from DB (fall back to config if empty)
+	store, err := openHistoryStore(defaultHistoryDBPath)
+	if err != nil {
+		errorLogger.Printf("failed to open history store: %v", err)
+		return exitRuntimeError
+	}
+	defer store.Close()
+	users, err := store.listUsers(context.Background())
+	if err != nil {
+		errorLogger.Printf("failed to load users from DB: %v", err)
+		return exitRuntimeError
+	}
+	trackedIDs := make([]string, 0, len(users))
+	for _, u := range users {
+		trackedIDs = append(trackedIDs, u.UserID)
+	}
+	if len(trackedIDs) == 0 {
+		trackedIDs = cfg.TrackedUserIDs
+	}
+
+	complete, missing := completionStatus(trackedIDs, msgs)
 	infoLogger.Printf("computed completion complete=%v missing=%v", complete, missing)
 
 	if len(missing) == 0 {
@@ -668,7 +702,22 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 		return exitRuntimeError
 	}
 
-	complete, missing := completionStatus(cfg.TrackedUserIDs, msgs)
+	// load tracked users from DB (fall back to config if empty)
+	users, err := store.listUsers(context.Background())
+	if err != nil {
+		errorLogger.Printf("failed to load users from DB: %v", err)
+		return exitRuntimeError
+	}
+	trackedIDs := make([]string, 0, len(users))
+	for _, u := range users {
+		trackedIDs = append(trackedIDs, u.UserID)
+	}
+	if len(trackedIDs) == 0 {
+		// fallback to config-based tracked IDs for compatibility
+		trackedIDs = cfg.TrackedUserIDs
+	}
+
+	complete, missing := completionStatus(trackedIDs, msgs)
 	infoLogger.Printf("scan-history message summary complete=%v missing=%v", complete, missing)
 
 	currentUser, err := currentUserFn(dg)
@@ -677,12 +726,43 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 		return exitRuntimeError
 	}
 
-	submissions, reminder := buildScanHistoryRecords(targetDate, cfg.TrackedUserIDs, currentUser.ID, cfg.Location, msgs)
+	submissions, reminder := buildScanHistoryRecords(targetDate, trackedIDs, currentUser.ID, cfg.Location, msgs)
 	if err := store.writeScanHistory(context.Background(), submissions, reminder); err != nil {
 		errorLogger.Printf("failed to persist scan history for thread id=%s: %v", match.thread.ID, err)
 		return exitRuntimeError
 	}
 	infoLogger.Printf("persisted scan history submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
 	infoLogger.Printf("scan-history summary target_date=%s thread_source=%s thread_id=%s complete_count=%d missing_count=%d submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", targetDate.Format(scanDateLayout), match.source, match.thread.ID, len(complete), len(missing), len(submissions), reminder.RemindedAt != nil)
+	return exitSuccess
+}
+
+func runAddUser(cfgPath, userID, displayName, dbPath string, stdout, stderr io.Writer) int {
+	errorLogger := log.New(stderr, "", log.LstdFlags)
+	infoLogger := log.New(stdout, "", log.LstdFlags)
+
+	userID = strings.TrimSpace(userID)
+	displayName = strings.TrimSpace(displayName)
+	if userID == "" || displayName == "" {
+		errorLogger.Printf("--id and --name are required")
+		return exitConfigError
+	}
+	if !discordIDPattern.MatchString(userID) {
+		errorLogger.Printf("invalid --id %q: must be a Discord snowflake", userID)
+		return exitConfigError
+	}
+
+	store, err := openHistoryStore(dbPath)
+	if err != nil {
+		errorLogger.Printf("failed to open history store: %v", err)
+		return exitRuntimeError
+	}
+	defer store.Close()
+
+	if err := store.addUser(context.Background(), userID, displayName); err != nil {
+		errorLogger.Printf("failed to add user: %v", err)
+		return exitRuntimeError
+	}
+
+	infoLogger.Printf("added user id=%s name=%q", userID, displayName)
 	return exitSuccess
 }

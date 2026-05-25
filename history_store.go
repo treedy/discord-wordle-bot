@@ -85,6 +85,11 @@ thread_date TEXT NOT NULL CHECK(thread_date <> ''),
 reminded_at TEXT,
 PRIMARY KEY (thread_date)
 )`,
+		`CREATE TABLE IF NOT EXISTS users (
+user_id TEXT NOT NULL CHECK(user_id <> ''),
+display_name TEXT NOT NULL CHECK(display_name <> ''),
+PRIMARY KEY (user_id)
+)`,
 	}
 
 	for _, statement := range statements {
@@ -93,6 +98,48 @@ PRIMARY KEY (thread_date)
 		}
 	}
 
+	return nil
+}
+
+type userRow struct {
+	UserID      string
+	DisplayName string
+}
+
+func (s *historyStore) listUsers(ctx context.Context) ([]userRow, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("list users: nil database")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id, display_name FROM users ORDER BY display_name`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: query: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]userRow, 0)
+	for rows.Next() {
+		var u userRow
+		if err := rows.Scan(&u.UserID, &u.DisplayName); err != nil {
+			return nil, fmt.Errorf("list users: scan: %w", err)
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: iterate: %w", err)
+	}
+	return users, nil
+}
+
+func (s *historyStore) addUser(ctx context.Context, userID, displayName string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("add user: nil database")
+	}
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(displayName) == "" {
+		return fmt.Errorf("add user: user_id and display_name are required")
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO users (user_id, display_name) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name`, userID, displayName); err != nil {
+		return fmt.Errorf("add user: exec: %w", err)
+	}
 	return nil
 }
 

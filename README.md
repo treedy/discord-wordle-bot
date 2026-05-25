@@ -38,6 +38,17 @@ Generate a stats report from stored history. By default `report-stats` writes to
 ./discord-wordle-bot report-stats --config config.json --period daily --date 2026-04-18
 ./discord-wordle-bot report-stats --config config.json --period weekly --date 2026-04-18 --output stdout
 ./discord-wordle-bot report-stats --config config.json --period monthly --date 2026-04-18 --output discord
+
+Manage tracked users (new):
+
+Add a user to the persistent `users` table (creates or updates display name). Flags: `--id` (Discord user ID), `--name` (display name), and optional `--db-path` to point at a different SQLite file.
+
+```bash
+./discord-wordle-bot add-user --id 155088535215407106 --name "Alice"
+./discord-wordle-bot add-user --id 408856373133180928 --name "Bob" --db-path /data/wordle_history.db
+```
+
+When running the other commands (`send-reminders`, `scan-history`, `report-stats`), the program now loads the list of tracked users from the `users` table in the configured (or `--db-path`) SQLite database. If the table is empty the CLI will fall back to the `tracked_user_ids` list in `config.json` for compatibility.
 ```
 
 **Note** about `--date`: the `--date` value (required, format `YYYY-MM-DD`) selects the reference date for the report and is interpreted in the `timezone` configured in `config.json`.

@@ -162,13 +162,17 @@ func TestValidateConfigCases(t *testing.T) {
 			wantTimezone:   "America/New_York",
 		},
 		{
-			name: "rejects missing tracked users",
+			name: "allows missing tracked users",
 			config: Config{
 				BotToken:  "secret-token",
 				ChannelID: "123456789012345678",
 				Timezone:  "America/New_York",
 			},
-			wantErr: "tracked_user_ids must contain at least one user ID",
+			wantBotToken:   "secret-token",
+			wantChannelID:  "123456789012345678",
+			wantTrackedIDs: nil,
+			wantPrompt:     defaultStarterPrompt,
+			wantTimezone:   "America/New_York",
 		},
 		{
 			name: "rejects invalid channel id",

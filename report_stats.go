@@ -79,7 +79,7 @@ func runReportStats(cfgPath, periodValue, dateValue, dbPath, outputValue string,
 		return exitConfigError
 	}
 
-	store, err := openHistoryStore(dbPath)
+	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError

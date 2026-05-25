@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -156,6 +157,16 @@ func validateConfig(c *Config) error {
 func normalizeBotToken(token string) string {
 	token = strings.TrimSpace(token)
 	return strings.TrimPrefix(token, "Bot ")
+}
+
+func resolveDBPath(cfgPath, dbPath string) string {
+	if dbPath != defaultHistoryDBPath {
+		return dbPath
+	}
+	if cfgPath == "" {
+		return dbPath
+	}
+	return filepath.Join(filepath.Dir(cfgPath), dbPath)
 }
 
 func currentDay(now time.Time, location *time.Location) time.Time {
@@ -610,7 +621,7 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 	}
 
 	// load tracked users from DB (fall back to config if empty)
-	store, err := openHistoryStore(defaultHistoryDBPath)
+	store, err := openHistoryStore(resolveDBPath(cfgPath, defaultHistoryDBPath))
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError
@@ -682,7 +693,7 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 		return exitRuntimeError
 	}
 
-	store, err := openHistoryStore(dbPath)
+	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError
@@ -751,7 +762,7 @@ func runAddUser(cfgPath, userID, displayName, dbPath string, stdout, stderr io.W
 		return exitConfigError
 	}
 
-	store, err := openHistoryStore(dbPath)
+	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError

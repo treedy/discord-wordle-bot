@@ -476,6 +476,7 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 	sendCmd := flag.NewFlagSet(sendRemindersCommand, flag.ContinueOnError)
 	sendCmd.SetOutput(stderr)
 	sendCfg := sendCmd.String("config", configFilePath, configFilePathDesc)
+	sendDBPath := sendCmd.String("db-path", defaultHistoryDBPath, "path to SQLite scan-history database")
 
 	scanCmd := flag.NewFlagSet(scanHistoryCommand, flag.ContinueOnError)
 	scanCmd.SetOutput(stderr)
@@ -499,12 +500,12 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		if err := createCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runMode(*createCfg, stdout, stderr, now, createThreadCommand)
+		return runMode(*createCfg, defaultHistoryDBPath, stdout, stderr, now, createThreadCommand)
 	case sendRemindersCommand:
 		if err := sendCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runMode(*sendCfg, stdout, stderr, now, sendRemindersCommand)
+		return runMode(*sendCfg, *sendDBPath, stdout, stderr, now, sendRemindersCommand)
 	case scanHistoryCommand:
 		if err := scanCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
@@ -538,10 +539,10 @@ func usage(w io.Writer, programName string) {
 }
 
 func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
-	return runMode(cfgPath, stdout, stderr, now, "both")
+	return runMode(cfgPath, defaultHistoryDBPath, stdout, stderr, now, "both")
 }
 
-func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
+func runMode(cfgPath, dbPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
@@ -621,7 +622,7 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 	}
 
 	// load tracked users from DB (fall back to config if empty)
-	store, err := openHistoryStore(resolveDBPath(cfgPath, defaultHistoryDBPath))
+	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError

@@ -1,5 +1,5 @@
 # Multi-stage Dockerfile: build a static Go binary, run on small alpine image
-FROM golang:1.21-alpine AS builder
+FROM golang:1.26.4-alpine3.23 AS builder
 RUN apk add --no-cache git
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -8,9 +8,10 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
     go build -ldflags='-s -w' -o /src/discord-wordle-bot ./
 
-FROM alpine:3.18
+FROM alpine:3.23.4
 RUN apk add --no-cache \
     ca-certificates \
+    coreutils \
     tzdata
 WORKDIR /app
 COPY --from=builder /src/discord-wordle-bot /app/discord-wordle-bot

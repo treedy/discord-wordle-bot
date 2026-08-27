@@ -64,19 +64,6 @@ var (
 	}
 )
 
-type dailyThreadError struct {
-	op  string
-	err error
-}
-
-func (e *dailyThreadError) Error() string {
-	return e.op + ": " + e.err.Error()
-}
-
-func (e *dailyThreadError) Unwrap() error {
-	return e.err
-}
-
 func loadConfig(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -235,6 +222,15 @@ func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string)
 	return "", ""
 }
 
+type todayThreadSetup struct {
+	cfg        *Config
+	today      time.Time
+	todayTitle string
+	dg         *discordgo.Session
+	threadID   string
+	threadName string
+}
+
 func threadTitle(t time.Time) string {
 	return t.Format("Jan 2")
 }
@@ -362,19 +358,6 @@ func hasSameDayReminder(msgs []*discordgo.Message, botUserID string, today time.
 	return false
 }
 
-func createDailyThread(s *discordgo.Session, channelID, threadName, starterPrompt string) (*discordgo.Channel, error) {
-	threadChannel, err := createThreadFn(s, channelID, threadName)
-	if err != nil {
-		return nil, &dailyThreadError{op: "create thread", err: err}
-	}
-
-	if _, err := sendChannelMessageFn(s, threadChannel.ID, starterPrompt); err != nil {
-		return nil, &dailyThreadError{op: "send starter prompt", err: err}
-	}
-
-	return threadChannel, nil
-}
-
 type historyThreadMatch struct {
 	thread  *discordgo.Channel
 	source  string
@@ -500,12 +483,12 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		if err := createCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runMode(*createCfg, defaultHistoryDBPath, stdout, stderr, now, createThreadCommand)
+		return runCreateThread(*createCfg, defaultHistoryDBPath, stdout, stderr, now)
 	case sendRemindersCommand:
 		if err := sendCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runMode(*sendCfg, *sendDBPath, stdout, stderr, now, sendRemindersCommand)
+		return runSendReminders(*sendCfg, *sendDBPath, stdout, stderr, now)
 	case scanHistoryCommand:
 		if err := scanCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
@@ -536,137 +519,6 @@ func usage(w io.Writer, programName string) {
 	fmt.Fprintf(w, "  %s  Add a tracked user to the database (flags: --id, --name, --db-path)\n", "add-user")
 	fmt.Fprintf(w, "  %s  Print a statistics report from stored history\n", reportStatsCommand)
 	fmt.Fprintln(w, "  help            Show this help message")
-}
-
-func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
-	return runMode(cfgPath, defaultHistoryDBPath, stdout, stderr, now, "both")
-}
-
-func runMode(cfgPath, dbPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
-	infoLogger := log.New(stdout, "", log.LstdFlags)
-	errorLogger := log.New(stderr, "", log.LstdFlags)
-
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		errorLogger.Printf("configuration error: %v", err)
-		return exitConfigError
-	}
-
-	today := currentDay(now(), cfg.Location)
-	todayTitle := threadTitle(today)
-	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
-
-	dg, err := newDiscordSession(cfg.BotToken)
-	if err != nil {
-		errorLogger.Printf("failed to create discord session: %v", err)
-		return exitRuntimeError
-	}
-
-	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
-	if err != nil {
-		errorLogger.Printf("failed to list active threads: %v", err)
-		return exitRuntimeError
-	}
-
-	threadID, threadName := findTodayThread(threads, today)
-
-	// Handle create-thread mode: create today's thread if missing, then exit
-	if mode == createThreadCommand {
-		if threadID == "" {
-			if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
-				var threadErr *dailyThreadError
-				if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
-					errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
-					return exitRuntimeError
-				}
-				errorLogger.Printf("failed to create daily thread: %v", err)
-				return exitRuntimeError
-			}
-			infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
-			return exitSuccess
-		}
-		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-		return exitSuccess
-	}
-
-	// For send-reminders mode, require the thread to already exist
-	if mode == sendRemindersCommand {
-		if threadID == "" {
-			errorLogger.Printf("no active thread for today (%s); run create-thread first", todayTitle)
-			return exitRuntimeError
-		}
-	}
-
-	// For "both" mode (default), preserve prior behavior: create thread then exit,
-	// otherwise proceed to reminders.
-	if mode == "both" && threadID == "" {
-		if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
-			var threadErr *dailyThreadError
-			if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
-				errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
-				return exitRuntimeError
-			}
-			errorLogger.Printf("failed to create daily thread: %v", err)
-			return exitRuntimeError
-		}
-		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
-		return exitSuccess
-	}
-
-	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-
-	msgs, err := messagesInChannelFn(dg, threadID)
-	if err != nil {
-		errorLogger.Printf("failed to fetch messages in thread: %v", err)
-		return exitRuntimeError
-	}
-
-	// load tracked users from DB (fall back to config if empty)
-	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
-	if err != nil {
-		errorLogger.Printf("failed to open history store: %v", err)
-		return exitRuntimeError
-	}
-	defer store.Close()
-	users, err := store.listUsers(context.Background())
-	if err != nil {
-		errorLogger.Printf("failed to load users from DB: %v", err)
-		return exitRuntimeError
-	}
-	trackedIDs := make([]string, 0, len(users))
-	for _, u := range users {
-		trackedIDs = append(trackedIDs, u.UserID)
-	}
-	if len(trackedIDs) == 0 {
-		trackedIDs = cfg.TrackedUserIDs
-	}
-
-	complete, missing := completionStatus(trackedIDs, msgs)
-	infoLogger.Printf("computed completion complete=%v missing=%v", complete, missing)
-
-	if len(missing) == 0 {
-		infoLogger.Printf("no tracked users missing; skipping reminder")
-		return exitSuccess
-	}
-
-	currentUser, err := currentUserFn(dg)
-	if err != nil {
-		errorLogger.Printf("failed to resolve current bot user: %v", err)
-		return exitRuntimeError
-	}
-
-	if hasSameDayReminder(msgs, currentUser.ID, today, cfg.Location) {
-		infoLogger.Printf("same-day reminder already exists in thread; skipping duplicate reminder")
-		return exitSuccess
-	}
-
-	reminder := formatReminderMessage(missing)
-	if _, err := sendChannelMessageFn(dg, threadID, reminder); err != nil {
-		errorLogger.Printf("failed to post reminder: %v", err)
-		return exitRuntimeError
-	}
-	infoLogger.Printf("posted reminder for missing=%v", missing)
-	return exitSuccess
 }
 
 func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer) int {
@@ -746,6 +598,44 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 	infoLogger.Printf("persisted scan history submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
 	infoLogger.Printf("scan-history summary target_date=%s thread_source=%s thread_id=%s complete_count=%d missing_count=%d submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", targetDate.Format(scanDateLayout), match.source, match.thread.ID, len(complete), len(missing), len(submissions), reminder.RemindedAt != nil)
 	return exitSuccess
+}
+
+func setupTodayThread(cfgPath string, infoLogger, errorLogger *log.Logger, now func() time.Time) (*todayThreadSetup, int) {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		errorLogger.Printf("configuration error: %v", err)
+		return nil, exitConfigError
+	}
+
+	today := currentDay(now(), cfg.Location)
+	todayTitle := threadTitle(today)
+	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
+
+	dg, err := newDiscordSession(cfg.BotToken)
+	if err != nil {
+		errorLogger.Printf("failed to create discord session: %v", err)
+		return nil, exitRuntimeError
+	}
+
+	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
+	if err != nil {
+		errorLogger.Printf("failed to list active threads: %v", err)
+		return nil, exitRuntimeError
+	}
+
+	threadID, threadName := findTodayThread(threads, today)
+	if threadID != "" {
+		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
+	}
+
+	return &todayThreadSetup{
+		cfg:        cfg,
+		today:      today,
+		todayTitle: todayTitle,
+		dg:         dg,
+		threadID:   threadID,
+		threadName: threadName,
+	}, exitSuccess
 }
 
 func runAddUser(cfgPath, userID, displayName, dbPath string, stdout, stderr io.Writer) int {

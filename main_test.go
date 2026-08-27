@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -401,6 +402,69 @@ func TestFindTodayThread(t *testing.T) {
 	}
 }
 
+func TestSetupTodayThreadFindsExistingThread(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	originalNewDiscordSession := newDiscordSession
+	originalListActiveThreads := listActiveThreadsFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		listActiveThreadsFn = originalListActiveThreads
+	})
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		if botToken != "secret-token" {
+			t.Fatalf("newDiscordSession() botToken = %q, want %q", botToken, "secret-token")
+		}
+		return &discordgo.Session{}, nil
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		if channelID != "123456789012345678" {
+			t.Fatalf("listActiveThreadsFn() channelID = %q, want %q", channelID, "123456789012345678")
+		}
+		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	setup, exitCode := setupTodayThread(
+		configPath,
+		log.New(&stdout, "", 0),
+		log.New(&stderr, "", 0),
+		func() time.Time {
+			return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
+		},
+	)
+
+	if exitCode != exitSuccess {
+		t.Fatalf("setupTodayThread() exitCode = %d, want %d", exitCode, exitSuccess)
+	}
+	if setup == nil {
+		t.Fatal("setupTodayThread() setup = nil, want non-nil")
+	}
+	if setup.todayTitle != "Apr 18" {
+		t.Fatalf("setupTodayThread() todayTitle = %q, want %q", setup.todayTitle, "Apr 18")
+	}
+	if setup.threadID != "existing-thread-id" || setup.threadName != "Apr 18" {
+		t.Fatalf("setupTodayThread() thread = (%q, %q), want (%q, %q)", setup.threadID, setup.threadName, "existing-thread-id", "Apr 18")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "starting run for current_date=Apr 18 timezone=America/New_York") {
+		t.Fatalf("stdout = %q, want start log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `found active thread name="Apr 18" id=existing-thread-id`) {
+		t.Fatalf("stdout = %q, want found-thread log", stdout.String())
+	}
+}
+
 func TestIsQualifyingSubmission(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -573,189 +637,6 @@ func TestHasSameDayReminder(t *testing.T) {
 				t.Fatalf("hasSameDayReminder() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestCreateDailyThread(t *testing.T) {
-	originalCreateThread := createThreadFn
-	originalSendChannelMessage := sendChannelMessageFn
-	t.Cleanup(func() {
-		createThreadFn = originalCreateThread
-		sendChannelMessageFn = originalSendChannelMessage
-	})
-
-	tests := []struct {
-		name           string
-		createErr      error
-		sendErr        error
-		wantErr        string
-		wantLogOp      string
-		wantSendTo     string
-		wantThreadID   string
-		wantThreadName string
-	}{
-		{
-			name:           "creates thread and posts starter prompt",
-			wantSendTo:     "new-thread-id",
-			wantThreadID:   "new-thread-id",
-			wantThreadName: "Apr 18",
-		},
-		{
-			name:      "returns create thread error",
-			createErr: errors.New("thread create failed"),
-			wantErr:   "create thread: thread create failed",
-			wantLogOp: "create thread",
-		},
-		{
-			name:       "returns send starter prompt error",
-			sendErr:    errors.New("starter prompt failed"),
-			wantErr:    "send starter prompt: starter prompt failed",
-			wantLogOp:  "send starter prompt",
-			wantSendTo: "new-thread-id",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			createThreadFn = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
-				if channelID != "123456789012345678" {
-					t.Fatalf("createThreadFn() channelID = %q, want %q", channelID, "123456789012345678")
-				}
-				if name != "Apr 18" {
-					t.Fatalf("createThreadFn() name = %q, want %q", name, "Apr 18")
-				}
-				if tt.createErr != nil {
-					return nil, tt.createErr
-				}
-				return &discordgo.Channel{ID: "new-thread-id", Name: name}, nil
-			}
-
-			sendCalled := false
-			sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-				sendCalled = true
-				if channelID != tt.wantSendTo {
-					t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, tt.wantSendTo)
-				}
-				if content != defaultStarterPrompt {
-					t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, defaultStarterPrompt)
-				}
-				if tt.sendErr != nil {
-					return nil, tt.sendErr
-				}
-				return &discordgo.Message{ID: "starter-message-id"}, nil
-			}
-
-			thread, err := createDailyThread(&discordgo.Session{}, "123456789012345678", "Apr 18", defaultStarterPrompt)
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatal("createDailyThread() error = nil, want non-nil")
-				}
-				if err.Error() != tt.wantErr {
-					t.Fatalf("createDailyThread() error = %q, want %q", err, tt.wantErr)
-				}
-				var threadErr *dailyThreadError
-				if !errors.As(err, &threadErr) {
-					t.Fatalf("createDailyThread() error type = %T, want *dailyThreadError", err)
-				}
-				if threadErr.op != tt.wantLogOp {
-					t.Fatalf("dailyThreadError.op = %q, want %q", threadErr.op, tt.wantLogOp)
-				}
-				if tt.createErr != nil && sendCalled {
-					t.Fatal("sendChannelMessageFn() should not be called when thread creation fails")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("createDailyThread() error = %v", err)
-			}
-			if thread == nil {
-				t.Fatal("createDailyThread() thread = nil, want non-nil")
-			}
-			if thread.ID != tt.wantThreadID {
-				t.Fatalf("createDailyThread() thread ID = %q, want %q", thread.ID, tt.wantThreadID)
-			}
-			if thread.Name != tt.wantThreadName {
-				t.Fatalf("createDailyThread() thread Name = %q, want %q", thread.Name, tt.wantThreadName)
-			}
-		})
-	}
-}
-
-func TestRunUsesConfiguredTimezoneForDayAndLogsCronSafeSuccess(t *testing.T) {
-	configPath := writeTempConfig(t, `{
-  "bot_token": "secret-token",
-  "channel_id": "123456789012345678",
-  "tracked_user_ids": ["234567890123456789"],
-  "timezone": "America/New_York"
-}`)
-
-	originalNewDiscordSession := newDiscordSession
-	originalListActiveThreads := listActiveThreadsFn
-	originalCreateThread := createThreadFn
-	originalSendChannelMessage := sendChannelMessageFn
-	originalMessagesInChannel := messagesInChannelFn
-	t.Cleanup(func() {
-		newDiscordSession = originalNewDiscordSession
-		listActiveThreadsFn = originalListActiveThreads
-		createThreadFn = originalCreateThread
-		sendChannelMessageFn = originalSendChannelMessage
-		messagesInChannelFn = originalMessagesInChannel
-	})
-
-	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
-		return &discordgo.Session{}, nil
-	}
-	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
-		return nil, nil
-	}
-	createThreadFn = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
-		if channelID != "123456789012345678" {
-			t.Fatalf("createThreadFn() channelID = %q, want %q", channelID, "123456789012345678")
-		}
-		if name != "Apr 18" {
-			t.Fatalf("createThreadFn() name = %q, want %q", name, "Apr 18")
-		}
-		return &discordgo.Channel{ID: "new-thread-id", Name: name}, nil
-	}
-	messagesInChannelCalled := false
-	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-		if channelID != "new-thread-id" {
-			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "new-thread-id")
-		}
-		if content != defaultStarterPrompt {
-			t.Fatalf("sendChannelMessageFn() content = %q, want %q", content, defaultStarterPrompt)
-		}
-		return &discordgo.Message{ID: "starter-message-id"}, nil
-	}
-	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
-		messagesInChannelCalled = true
-		return nil, nil
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := run(configPath, &stdout, &stderr, func() time.Time {
-		return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
-	})
-
-	if exitCode != exitSuccess {
-		t.Fatalf("run() exitCode = %d, want %d", exitCode, exitSuccess)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-
-	logOutput := stdout.String()
-	if !strings.Contains(logOutput, "current_date=Apr 18 timezone=America/New_York") {
-		t.Fatalf("stdout = %q, want timezone-based thread date log", logOutput)
-	}
-	if !strings.Contains(logOutput, `created daily thread name="Apr 18"; exiting without reminder`) {
-		t.Fatalf("stdout = %q, want created-thread success log", logOutput)
-	}
-	if messagesInChannelCalled {
-		t.Fatal("messagesInChannelFn() should not be called when thread is created during this run")
 	}
 }
 
@@ -1015,221 +896,6 @@ func TestFormatReminderMessageUsesNaturalMentions(t *testing.T) {
 				t.Fatalf("formatReminderMessage() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestRunPostsReminderForMissingTrackedUsersInExistingThread(t *testing.T) {
-	configPath := writeTempConfig(t, `{
-  "bot_token": "secret-token",
-  "channel_id": "123456789012345678",
-  "tracked_user_ids": ["234567890123456789", "345678901234567890"],
-  "timezone": "America/New_York"
-}`)
-
-	originalNewDiscordSession := newDiscordSession
-	originalCurrentUser := currentUserFn
-	originalListActiveThreads := listActiveThreadsFn
-	originalCreateThread := createThreadFn
-	originalSendChannelMessage := sendChannelMessageFn
-	originalMessagesInChannel := messagesInChannelFn
-	t.Cleanup(func() {
-		newDiscordSession = originalNewDiscordSession
-		currentUserFn = originalCurrentUser
-		listActiveThreadsFn = originalListActiveThreads
-		createThreadFn = originalCreateThread
-		sendChannelMessageFn = originalSendChannelMessage
-		messagesInChannelFn = originalMessagesInChannel
-	})
-
-	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
-		return &discordgo.Session{}, nil
-	}
-	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
-		return &discordgo.User{ID: "bot-user-id"}, nil
-	}
-	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
-		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
-	}
-	createThreadCalled := false
-	createThreadFn = func(s *discordgo.Session, channelID, name string) (*discordgo.Channel, error) {
-		createThreadCalled = true
-		return nil, nil
-	}
-	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
-		if channelID != "existing-thread-id" {
-			t.Fatalf("messagesInChannelFn() channelID = %q, want %q", channelID, "existing-thread-id")
-		}
-		return []*discordgo.Message{
-			{
-				Author:           &discordgo.User{ID: "234567890123456789"},
-				Content:          "Scordle 123 4/6",
-				MessageReference: &discordgo.MessageReference{MessageID: "another-message-id"},
-			},
-			{Author: &discordgo.User{ID: "234567890123456789"}, Content: " Wordle 123 4/6"},
-			{Author: &discordgo.User{ID: "999999999999999999"}, Content: "hello"},
-		}, nil
-	}
-	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-		if channelID != "existing-thread-id" {
-			t.Fatalf("sendChannelMessageFn() channelID = %q, want %q", channelID, "existing-thread-id")
-		}
-		if content != "Reminder: <@345678901234567890> still needs to post today's Wordle or Scoredle." {
-			t.Fatalf("sendChannelMessageFn() content = %q", content)
-		}
-		return &discordgo.Message{ID: "reminder-message-id"}, nil
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := run(configPath, &stdout, &stderr, func() time.Time {
-		return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
-	})
-
-	if exitCode != exitSuccess {
-		t.Fatalf("run() exitCode = %d, want %d", exitCode, exitSuccess)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `found active thread name="Apr 18" id=existing-thread-id`) {
-		t.Fatalf("stdout = %q, want found-thread log", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "computed completion complete=[234567890123456789] missing=[345678901234567890]") {
-		t.Fatalf("stdout = %q, want completion log", stdout.String())
-	}
-	if !strings.Contains(stdout.String(), "posted reminder for missing=[345678901234567890]") {
-		t.Fatalf("stdout = %q, want posted-reminder log", stdout.String())
-	}
-	if createThreadCalled {
-		t.Fatal("createThreadFn() should not be called when today's thread already exists")
-	}
-}
-
-func TestRunSkipsReminderWhenNoTrackedUsersAreMissing(t *testing.T) {
-	configPath := writeTempConfig(t, `{
-  "bot_token": "secret-token",
-  "channel_id": "123456789012345678",
-  "tracked_user_ids": ["234567890123456789", "345678901234567890"],
-  "timezone": "America/New_York"
-}`)
-
-	originalNewDiscordSession := newDiscordSession
-	originalCurrentUser := currentUserFn
-	originalListActiveThreads := listActiveThreadsFn
-	originalSendChannelMessage := sendChannelMessageFn
-	originalMessagesInChannel := messagesInChannelFn
-	t.Cleanup(func() {
-		newDiscordSession = originalNewDiscordSession
-		currentUserFn = originalCurrentUser
-		listActiveThreadsFn = originalListActiveThreads
-		sendChannelMessageFn = originalSendChannelMessage
-		messagesInChannelFn = originalMessagesInChannel
-	})
-
-	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
-		return &discordgo.Session{}, nil
-	}
-	currentUserCalled := false
-	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
-		currentUserCalled = true
-		return &discordgo.User{ID: "bot-user-id"}, nil
-	}
-	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
-		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
-	}
-	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
-		return []*discordgo.Message{
-			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
-			{Author: &discordgo.User{ID: "345678901234567890"}, Content: "Scoredle 123 4/6"},
-		}, nil
-	}
-	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-		t.Fatal("sendChannelMessageFn() should not be called when nobody is missing")
-		return nil, nil
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := run(configPath, &stdout, &stderr, func() time.Time {
-		return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
-	})
-
-	if exitCode != exitSuccess {
-		t.Fatalf("run() exitCode = %d, want %d", exitCode, exitSuccess)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-	if currentUserCalled {
-		t.Fatal("currentUserFn() should not be called when nobody is missing")
-	}
-	if !strings.Contains(stdout.String(), "no tracked users missing; skipping reminder") {
-		t.Fatalf("stdout = %q, want skip-reminder log", stdout.String())
-	}
-}
-
-func TestRunSuppressesDuplicateSameDayReminder(t *testing.T) {
-	configPath := writeTempConfig(t, `{
-  "bot_token": "secret-token",
-  "channel_id": "123456789012345678",
-  "tracked_user_ids": ["234567890123456789", "345678901234567890"],
-  "timezone": "America/New_York"
-}`)
-
-	originalNewDiscordSession := newDiscordSession
-	originalCurrentUser := currentUserFn
-	originalListActiveThreads := listActiveThreadsFn
-	originalSendChannelMessage := sendChannelMessageFn
-	originalMessagesInChannel := messagesInChannelFn
-	t.Cleanup(func() {
-		newDiscordSession = originalNewDiscordSession
-		currentUserFn = originalCurrentUser
-		listActiveThreadsFn = originalListActiveThreads
-		sendChannelMessageFn = originalSendChannelMessage
-		messagesInChannelFn = originalMessagesInChannel
-	})
-
-	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
-		return &discordgo.Session{}, nil
-	}
-	currentUserFn = func(s *discordgo.Session) (*discordgo.User, error) {
-		return &discordgo.User{ID: "bot-user-id"}, nil
-	}
-	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
-		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
-	}
-	messagesInChannelFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Message, error) {
-		return []*discordgo.Message{
-			{Author: &discordgo.User{ID: "234567890123456789"}, Content: "Wordle 123 4/6"},
-			{
-				Author:    &discordgo.User{ID: "bot-user-id"},
-				Content:   "Reminder: <@345678901234567890> still needs to post today's Wordle or Scoredle.",
-				Timestamp: time.Date(2026, time.April, 18, 16, 0, 0, 0, time.UTC),
-			},
-		}, nil
-	}
-	sendChannelMessageFn = func(s *discordgo.Session, channelID, content string) (*discordgo.Message, error) {
-		t.Fatal("sendChannelMessageFn() should not be called when a same-day reminder already exists")
-		return nil, nil
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	exitCode := run(configPath, &stdout, &stderr, func() time.Time {
-		return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
-	})
-
-	if exitCode != exitSuccess {
-		t.Fatalf("run() exitCode = %d, want %d", exitCode, exitSuccess)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "same-day reminder already exists in thread; skipping duplicate reminder") {
-		t.Fatalf("stdout = %q, want duplicate-suppression log", stdout.String())
 	}
 }
 

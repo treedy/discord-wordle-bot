@@ -42,17 +42,17 @@ func runSendReminders(cfgPath, dbPath string, stdout, stderr io.Writer, now func
 	}
 
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-	return runSendRemindersForThread(cfg, cfgPath, dbPath, dg, threadID, today, infoLogger, errorLogger)
+	return runSendRemindersForThread(cfg, resolveDBPath(cfgPath, dbPath), dg, threadID, today, infoLogger, errorLogger)
 }
 
-func runSendRemindersForThread(cfg *Config, cfgPath, dbPath string, dg *discordgo.Session, threadID string, today time.Time, infoLogger, errorLogger *log.Logger) int {
+func runSendRemindersForThread(cfg *Config, dbPath string, dg *discordgo.Session, threadID string, today time.Time, infoLogger, errorLogger *log.Logger) int {
 	msgs, err := messagesInChannelFn(dg, threadID)
 	if err != nil {
 		errorLogger.Printf("failed to fetch messages in thread: %v", err)
 		return exitRuntimeError
 	}
 
-	store, err := openHistoryStore(resolveDBPath(cfgPath, dbPath))
+	store, err := openHistoryStore(dbPath)
 	if err != nil {
 		errorLogger.Printf("failed to open history store: %v", err)
 		return exitRuntimeError

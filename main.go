@@ -560,7 +560,7 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int
 	}
 
 	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-	return runSendRemindersForThread(cfg, cfgPath, defaultHistoryDBPath, dg, threadID, today, infoLogger, errorLogger)
+	return runSendRemindersForThread(cfg, resolveDBPath(cfgPath, defaultHistoryDBPath), dg, threadID, today, infoLogger, errorLogger)
 }
 
 func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer) int {

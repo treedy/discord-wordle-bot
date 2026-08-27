@@ -42,35 +42,15 @@ func runCreateThread(cfgPath, dbPath string, stdout, stderr io.Writer, now func(
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		errorLogger.Printf("configuration error: %v", err)
-		return exitConfigError
+	setup, exitCode := setupTodayThread(cfgPath, infoLogger, errorLogger, now)
+	if exitCode != exitSuccess {
+		return exitCode
 	}
-
-	today := currentDay(now(), cfg.Location)
-	todayTitle := threadTitle(today)
-	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
-
-	dg, err := newDiscordSession(cfg.BotToken)
-	if err != nil {
-		errorLogger.Printf("failed to create discord session: %v", err)
-		return exitRuntimeError
-	}
-
-	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
-	if err != nil {
-		errorLogger.Printf("failed to list active threads: %v", err)
-		return exitRuntimeError
-	}
-
-	threadID, threadName := findTodayThread(threads, today)
-	if threadID != "" {
-		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
+	if setup.threadID != "" {
 		return exitSuccess
 	}
 
-	if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
+	if _, err := createDailyThread(setup.dg, setup.cfg.ChannelID, setup.todayTitle, setup.cfg.StarterPrompt); err != nil {
 		var threadErr *dailyThreadError
 		if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
 			errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
@@ -80,6 +60,6 @@ func runCreateThread(cfgPath, dbPath string, stdout, stderr io.Writer, now func(
 		return exitRuntimeError
 	}
 
-	infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
+	infoLogger.Printf("created daily thread name=%q; exiting without reminder", setup.todayTitle)
 	return exitSuccess
 }

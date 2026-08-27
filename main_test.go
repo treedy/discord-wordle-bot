@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -398,6 +399,69 @@ func TestFindTodayThread(t *testing.T) {
 				t.Fatalf("findTodayThread() = (%q, %q), want (%q, %q)", gotThreadID, gotName, tt.wantThreadID, tt.wantName)
 			}
 		})
+	}
+}
+
+func TestSetupTodayThreadFindsExistingThread(t *testing.T) {
+	configPath := writeTempConfig(t, `{
+  "bot_token": "secret-token",
+  "channel_id": "123456789012345678",
+  "tracked_user_ids": ["234567890123456789"],
+  "timezone": "America/New_York"
+}`)
+
+	originalNewDiscordSession := newDiscordSession
+	originalListActiveThreads := listActiveThreadsFn
+	t.Cleanup(func() {
+		newDiscordSession = originalNewDiscordSession
+		listActiveThreadsFn = originalListActiveThreads
+	})
+
+	newDiscordSession = func(botToken string) (*discordgo.Session, error) {
+		if botToken != "secret-token" {
+			t.Fatalf("newDiscordSession() botToken = %q, want %q", botToken, "secret-token")
+		}
+		return &discordgo.Session{}, nil
+	}
+	listActiveThreadsFn = func(s *discordgo.Session, channelID string) ([]*discordgo.Channel, error) {
+		if channelID != "123456789012345678" {
+			t.Fatalf("listActiveThreadsFn() channelID = %q, want %q", channelID, "123456789012345678")
+		}
+		return []*discordgo.Channel{{ID: "existing-thread-id", Name: "Apr 18"}}, nil
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	setup, exitCode := setupTodayThread(
+		configPath,
+		log.New(&stdout, "", 0),
+		log.New(&stderr, "", 0),
+		func() time.Time {
+			return time.Date(2026, time.April, 19, 2, 30, 0, 0, time.UTC)
+		},
+	)
+
+	if exitCode != exitSuccess {
+		t.Fatalf("setupTodayThread() exitCode = %d, want %d", exitCode, exitSuccess)
+	}
+	if setup == nil {
+		t.Fatal("setupTodayThread() setup = nil, want non-nil")
+	}
+	if setup.todayTitle != "Apr 18" {
+		t.Fatalf("setupTodayThread() todayTitle = %q, want %q", setup.todayTitle, "Apr 18")
+	}
+	if setup.threadID != "existing-thread-id" || setup.threadName != "Apr 18" {
+		t.Fatalf("setupTodayThread() thread = (%q, %q), want (%q, %q)", setup.threadID, setup.threadName, "existing-thread-id", "Apr 18")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "starting run for current_date=Apr 18 timezone=America/New_York") {
+		t.Fatalf("stdout = %q, want start log", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), `found active thread name="Apr 18" id=existing-thread-id`) {
+		t.Fatalf("stdout = %q, want found-thread log", stdout.String())
 	}
 }
 

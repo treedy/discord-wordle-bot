@@ -222,6 +222,15 @@ func findTodayThread(threads []*discordgo.Channel, t time.Time) (string, string)
 	return "", ""
 }
 
+type todayThreadSetup struct {
+	cfg        *Config
+	today      time.Time
+	todayTitle string
+	dg         *discordgo.Session
+	threadID   string
+	threadName string
+}
+
 func threadTitle(t time.Time) string {
 	return t.Format("Jan 2")
 }
@@ -511,58 +520,6 @@ func usage(w io.Writer, programName string) {
 	fmt.Fprintln(w, "  help            Show this help message")
 }
 
-func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
-	return runMode(cfgPath, stdout, stderr, now)
-}
-
-func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
-	infoLogger := log.New(stdout, "", log.LstdFlags)
-	errorLogger := log.New(stderr, "", log.LstdFlags)
-
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		errorLogger.Printf("configuration error: %v", err)
-		return exitConfigError
-	}
-
-	today := currentDay(now(), cfg.Location)
-	todayTitle := threadTitle(today)
-	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
-
-	dg, err := newDiscordSession(cfg.BotToken)
-	if err != nil {
-		errorLogger.Printf("failed to create discord session: %v", err)
-		return exitRuntimeError
-	}
-
-	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
-	if err != nil {
-		errorLogger.Printf("failed to list active threads: %v", err)
-		return exitRuntimeError
-	}
-
-	threadID, threadName := findTodayThread(threads, today)
-
-	// For "both" mode (default), preserve prior behavior: create thread then exit,
-	// otherwise proceed to reminders.
-	if threadID == "" {
-		if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
-			var threadErr *dailyThreadError
-			if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
-				errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
-				return exitRuntimeError
-			}
-			errorLogger.Printf("failed to create daily thread: %v", err)
-			return exitRuntimeError
-		}
-		infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
-		return exitSuccess
-	}
-
-	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-	return runSendRemindersForThread(cfg, resolveDBPath(cfgPath, defaultHistoryDBPath), dg, threadID, today, infoLogger, errorLogger)
-}
-
 func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer) int {
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
@@ -640,6 +597,44 @@ func runScanHistory(cfgPath, dateValue, dbPath string, stdout, stderr io.Writer)
 	infoLogger.Printf("persisted scan history submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", len(submissions), reminder.RemindedAt != nil)
 	infoLogger.Printf("scan-history summary target_date=%s thread_source=%s thread_id=%s complete_count=%d missing_count=%d submission_rows=%d reminder_rows=1 reminder_timestamp_present=%v", targetDate.Format(scanDateLayout), match.source, match.thread.ID, len(complete), len(missing), len(submissions), reminder.RemindedAt != nil)
 	return exitSuccess
+}
+
+func setupTodayThread(cfgPath string, infoLogger, errorLogger *log.Logger, now func() time.Time) (*todayThreadSetup, int) {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
+		errorLogger.Printf("configuration error: %v", err)
+		return nil, exitConfigError
+	}
+
+	today := currentDay(now(), cfg.Location)
+	todayTitle := threadTitle(today)
+	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
+
+	dg, err := newDiscordSession(cfg.BotToken)
+	if err != nil {
+		errorLogger.Printf("failed to create discord session: %v", err)
+		return nil, exitRuntimeError
+	}
+
+	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
+	if err != nil {
+		errorLogger.Printf("failed to list active threads: %v", err)
+		return nil, exitRuntimeError
+	}
+
+	threadID, threadName := findTodayThread(threads, today)
+	if threadID != "" {
+		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
+	}
+
+	return &todayThreadSetup{
+		cfg:        cfg,
+		today:      today,
+		todayTitle: todayTitle,
+		dg:         dg,
+		threadID:   threadID,
+		threadName: threadName,
+	}, exitSuccess
 }
 
 func runAddUser(cfgPath, userID, displayName, dbPath string, stdout, stderr io.Writer) int {

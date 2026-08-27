@@ -13,36 +13,16 @@ func runSendReminders(cfgPath, dbPath string, stdout, stderr io.Writer, now func
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
-	cfg, err := loadConfig(cfgPath)
-	if err != nil {
-		errorLogger.Printf("configuration error: %v", err)
-		return exitConfigError
+	setup, exitCode := setupTodayThread(cfgPath, infoLogger, errorLogger, now)
+	if exitCode != exitSuccess {
+		return exitCode
 	}
-
-	today := currentDay(now(), cfg.Location)
-	todayTitle := threadTitle(today)
-	infoLogger.Printf("starting run for current_date=%s timezone=%s", todayTitle, cfg.Timezone)
-
-	dg, err := newDiscordSession(cfg.BotToken)
-	if err != nil {
-		errorLogger.Printf("failed to create discord session: %v", err)
+	if setup.threadID == "" {
+		errorLogger.Printf("no active thread for today (%s); run create-thread first", setup.todayTitle)
 		return exitRuntimeError
 	}
 
-	threads, err := listActiveThreadsFn(dg, cfg.ChannelID)
-	if err != nil {
-		errorLogger.Printf("failed to list active threads: %v", err)
-		return exitRuntimeError
-	}
-
-	threadID, threadName := findTodayThread(threads, today)
-	if threadID == "" {
-		errorLogger.Printf("no active thread for today (%s); run create-thread first", todayTitle)
-		return exitRuntimeError
-	}
-
-	infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-	return runSendRemindersForThread(cfg, resolveDBPath(cfgPath, dbPath), dg, threadID, today, infoLogger, errorLogger)
+	return runSendRemindersForThread(setup.cfg, resolveDBPath(cfgPath, dbPath), setup.dg, setup.threadID, setup.today, infoLogger, errorLogger)
 }
 
 func runSendRemindersForThread(cfg *Config, dbPath string, dg *discordgo.Session, threadID string, today time.Time, infoLogger, errorLogger *log.Logger) int {

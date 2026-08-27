@@ -64,19 +64,6 @@ var (
 	}
 )
 
-type dailyThreadError struct {
-	op  string
-	err error
-}
-
-func (e *dailyThreadError) Error() string {
-	return e.op + ": " + e.err.Error()
-}
-
-func (e *dailyThreadError) Unwrap() error {
-	return e.err
-}
-
 func loadConfig(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -362,19 +349,6 @@ func hasSameDayReminder(msgs []*discordgo.Message, botUserID string, today time.
 	return false
 }
 
-func createDailyThread(s *discordgo.Session, channelID, threadName, starterPrompt string) (*discordgo.Channel, error) {
-	threadChannel, err := createThreadFn(s, channelID, threadName)
-	if err != nil {
-		return nil, &dailyThreadError{op: "create thread", err: err}
-	}
-
-	if _, err := sendChannelMessageFn(s, threadChannel.ID, starterPrompt); err != nil {
-		return nil, &dailyThreadError{op: "send starter prompt", err: err}
-	}
-
-	return threadChannel, nil
-}
-
 type historyThreadMatch struct {
 	thread  *discordgo.Channel
 	source  string
@@ -499,7 +473,7 @@ func runCLI(args []string, stdout, stderr io.Writer, now func() time.Time) int {
 		if err := createCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
 		}
-		return runMode(*createCfg, stdout, stderr, now, createThreadCommand)
+		return runCreateThread(*createCfg, defaultHistoryDBPath, stdout, stderr, now)
 	case sendRemindersCommand:
 		if err := sendCmd.Parse(args[2:]); err != nil {
 			return exitConfigError
@@ -542,6 +516,10 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 }
 
 func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
+	if mode == createThreadCommand {
+		return runCreateThread(cfgPath, defaultHistoryDBPath, stdout, stderr, now)
+	}
+
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 
@@ -568,25 +546,6 @@ func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mod
 	}
 
 	threadID, threadName := findTodayThread(threads, today)
-
-	// Handle create-thread mode: create today's thread if missing, then exit
-	if mode == createThreadCommand {
-		if threadID == "" {
-			if _, err := createDailyThread(dg, cfg.ChannelID, todayTitle, cfg.StarterPrompt); err != nil {
-				var threadErr *dailyThreadError
-				if errors.As(err, &threadErr) && threadErr.op == "send starter prompt" {
-					errorLogger.Printf("failed to send thread starter message: %v", threadErr.err)
-					return exitRuntimeError
-				}
-				errorLogger.Printf("failed to create daily thread: %v", err)
-				return exitRuntimeError
-			}
-			infoLogger.Printf("created daily thread name=%q; exiting without reminder", todayTitle)
-			return exitSuccess
-		}
-		infoLogger.Printf("found active thread name=%q id=%s", threadName, threadID)
-		return exitSuccess
-	}
 
 	// For send-reminders mode, require the thread to already exist
 	if mode == sendRemindersCommand {

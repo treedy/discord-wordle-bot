@@ -402,7 +402,7 @@ func TestFindTodayThread(t *testing.T) {
 	}
 }
 
-func TestSetupTodayThreadUsesConfiguredTimezoneAndFindsExistingThread(t *testing.T) {
+func TestSetupTodayThreadFindsExistingThread(t *testing.T) {
 	configPath := writeTempConfig(t, `{
   "bot_token": "secret-token",
   "channel_id": "123456789012345678",

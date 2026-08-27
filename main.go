@@ -516,10 +516,6 @@ func run(cfgPath string, stdout, stderr io.Writer, now func() time.Time) int {
 }
 
 func runMode(cfgPath string, stdout, stderr io.Writer, now func() time.Time, mode string) int {
-	if mode == createThreadCommand {
-		return runCreateThread(cfgPath, defaultHistoryDBPath, stdout, stderr, now)
-	}
-
 	infoLogger := log.New(stdout, "", log.LstdFlags)
 	errorLogger := log.New(stderr, "", log.LstdFlags)
 

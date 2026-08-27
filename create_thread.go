@@ -36,6 +36,7 @@ func createDailyThread(s *discordgo.Session, channelID, threadName, starterPromp
 }
 
 func runCreateThread(cfgPath, dbPath string, stdout, stderr io.Writer, now func() time.Time) int {
+	// dbPath is reserved for parity with other run* helpers and future use.
 	_ = dbPath
 
 	infoLogger := log.New(stdout, "", log.LstdFlags)
